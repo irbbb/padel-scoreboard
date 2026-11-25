@@ -39,3 +39,12 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 ## 4. Padel Domain & Core Engine Learnings (Unchanged & Reusable!)
 - **Pure-JS Core (`src/core/`):** Decoupled ES modules with zero browser/DOM imports (`node --test`), keeping scoring rules, tie-breaks, team server rotation, side-change cues, exclusive `A`/`B`/`E` denominators (`My UEs / points lost = E / (B + E)`), manual `"Finish Now"` (`FINISHED_MANUAL`), and event-log replay Undo 100% testable on PC.
 - **No QR Code Needed:** Because the match lives directly in the phone's `localStorage`, post-match analysis, multi-match history, and 1-tap `match.csv` / `match.json` download happen right inside the same PWA!
+
+---
+
+## 5. `S1.1–S1.3` Core Engine & Wrist Formatter Spike Learnings
+- **Single Source of Truth (`events[]` + Pure Replay):** Storing an immutable match record `{ schemaVersion, matchId, revision, config, startTimeMs, finishTimeMs, status, nextEventId, events }` and deriving all live score, tie-break state, server, `changeEndsAlert`, exclusive `A`/`B`/`E` counts, per-set UEs, and serve/return UE attribution via pure `deriveMatchState(record)` guarantees zero score/trace drift and effortless full-match Undo + `Correct first serving team`.
+- **Independent Monotonic `revision`:** Every state-mutating command (`addPoint`, `undoLastPoint`, `correctInitialServer`, `finishManual`, `resumeMatch`) increments `revision` by 1; no-op calls (e.g., Undo on 0 events, setting same opener) return the same record without bumping `revision`.
+- **Compact 2-Line Wrist Strings:** Using `*` directly beside the serving team's points (`*30-15`, `AD-40*`) and `#rev` keeps worst-case active strings within **14–15 characters** per line (e.g., `*10-10 TB #128` / `S1-1 UE:100 SWP`), leaving comfortable headroom under the provisional 20-char budget.
+- **Test Fixture Subtlety Caught:** Simulating a `6–4` set requires interleaving games (`4-4`, then `6-4`) rather than 6 straight games (which ends Set 1 at `6–0` and spills the remaining 4 games into Set 2!).
+
