@@ -523,6 +523,11 @@ function boot() {
   }, 1000);
 
   controller.init();
+
+  // Register offline Service Worker without forcing mid-match reloads
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+  }
 }
 
 boot();
