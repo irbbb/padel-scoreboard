@@ -2,9 +2,6 @@
 .gitignore
 node_modules
 dist
-dist-web
-build
-sign
 docs
 captures
 exports
@@ -12,4 +9,3 @@ coverage
 .env
 .env.*
 *.log
-*.rpk

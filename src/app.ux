@@ -1,7 +1,0 @@
-<script>
-export default {
-  onCreate() {
-    console.info('PadelScore created')
-  }
-}
-</script>

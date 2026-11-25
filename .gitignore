@@ -1,26 +1,15 @@
 # Dependencies
 node_modules/
 
-# Build & RPK outputs
+# Build outputs
 dist/
-dist-web/
-build/
-*.rpk
 coverage/
-
-# Local signing keys & certificates (never commit! Back up release keys outside Git)
-/sign/
-*.pem
-*.key
-*.p12
-*.jks
-*.keystore
 
 # Environment & secrets
 .env
 .env.*
 
-# Local device captures & exported personal HR/match dumps
+# Local device captures & personal HR/match exports
 captures/
 exports/
 

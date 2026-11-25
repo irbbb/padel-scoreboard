@@ -1,242 +1,205 @@
-# Product & Technical Backlog — Xiaomi Smart Band 9 Padel Scoreboard
+# Product & Technical Backlog — Xiaomi Smart Band 9 Active Padel Scoreboard (Offline Android Chrome PWA)
 
-**Target:** Xiaomi Smart Band 9 Global, `192 × 490` capsule display (325 ppi), Xiaomi Vela QuickApp (`.rpk`)  
-**Audience:** A mid-junior developer with access to the target band  
-**Background:** [Research and learnings](research-and-learnings.md)
+**Target:** Xiaomi Smart Band 9 Active (native Workout + Music Control screen) + Android Chrome Offline PWA (`navigator.mediaSession`)  
+**Audience:** A mid-junior developer  
+**Background:** [Research and learnings](research-and-learnings.md) · [Hardware notes](hardware-notes.md)  
+**Archived Vela Toolchain:** Git tag `vela-s0.1-archive`
 
 ---
 
 ## 1. Product Scope and Delivery Order
 
-On court, the player records any point in one tap: `US` wins a point for us, `THEM` wins a point for them, and `MY UE` wins a point for them while attributing it to my unforced error. The band works completely standalone with the phone disconnected. After play, the player inspects on-band stats and scans one Summary QR.
+On court, the player runs a **native Xiaomi Band 9 Active Workout** (recording real continuous Heart Rate and calories), swipes right to the built-in **Music Controls** screen, and controls an **offline Android Chrome PWA** sitting locked in their court bag—with **zero sideloaded APKs**. The band displays the live score and short revision marker across `title` and `artist`; the phone records every point and personal Unforced Error (`MY UE`) with UTC timestamps for instant post-match review.
+
+### Delivery Order (Field-Test Driven)
+1. **`P0` · Preserve Baseline & Offline Shell (`Epic 0`):** Commit the Band 9 Active pivot cleanly (keeping `vela-s0.1-archive`), verify the lean `node:22-alpine` + `esbuild` Docker build from a clean checkout, deploy GitHub Pages HTTPS + Service Worker, and prove cold offline start with sample display strings on the band.
+2. **`P0` · Build One Recoverable Match (`Epic 1` + `Epic 2`):** Ship the primary format played (`BO3` + `GP`) first with frozen rules, first-server selection/correction, UTC event log, independent monotonic `revision`, phone Undo, `Finish Now` / `Resume`, Web-Lock single-writer `localStorage` persistence, and `MediaSession` bridge (`Prev` = `US`, `Next` = `THEM`, single Center = `MY UE`, `#rev` marker, `Re-link Wrist`).
+3. **`P0` · Qualify the Wrist & Run Two Field Tests (`Epic 3`):** Measure exact `title`/`artist` truncation vs scrolling and tap-to-visible-revision delay, then pass a **90-minute court match** (against an independent tally) and a **disruption test** (call, WhatsApp voice note, headset, BLE range, Chrome kill → zero phantom points). If one-tap Center causes any phantom point, `S4.2` (`EDIT #<rev>`) becomes a conditional `P0` prerequisite before re-running `S3.2`.
+4. **Post-Qualification (`Epic 4`):** Complete remaining match formats (`AD`, `BO3+STB`, `1SET`, `FREE`), safe 2-step Reset, and (if not already triggered by `S3.2`) optional `EDIT #<rev>` wrist-Undo mode.
+5. **Post-Match Value (`Epic 5` `P1` / `P2`):** Match history, built-in UE analytics & `CSV`/`JSON` download (`P1`), and native Workout HR timestamp join gated on a real export (`P2`).
 
 | Tier | Player Outcome | Stories |
 | :---: | :--- | :--- |
-| **P0** | Start, score, correct, leave, resume, finish on match point or at the booking buzzer, and scan a Summary QR on a physical Global Band 9. | `S0.1–S0.3`, `S1.1a–S1.1b`, `S1.2–S1.4`, `S2.0–S2.3`, `S3.1–S3.2`, `S4.1a–S4.1b` |
-| **P1** | Add haptics and wake tuning, safe reset, paginated full-trace QR, and a single-file offline analyzer. | `S1.5`, `S3.3`, `S4.2–S4.3`, `S5.1a–S5.1b` |
-| **P2** | Consider HR file correlation once a real timestamped export exists. Keep other parked ideas in Epic 6. | `S5.2`, `Epic 6` |
-
-**Delivery Order:** First prove signed install, standalone use, and in-place upgrade on the target Global firmware. Measure storage and one-scan Summary QR on the band. Build the pure-JS score engine and crash-safe persistence, then wire the start screen and scoreboard. Close `P0` with a physical timed finish and a match-point correction. Full-trace pagination, offline analytics, and comfort tuning ship independently in `P1`.
+| **P0 (Core & Qualification)** | Cold offline PWA on GitHub Pages, one recoverable match controlled from the Band 9 Active during a native Workout, verified by a 90-minute match and disruption suite. | `S0.1–S0.2`, `S1.1–S1.4`, `S2.1–S2.3`, `S3.1–S3.2` *(+ conditional `S4.2` if `S3.2` fails one-tap Center)* |
+| **P0 (Post-Qualification)** | Remaining padel formats (`AD`, `BO3+STB`, `1SET`, `FREE`) and safe 2-step Reset. | `S4.1` |
+| **P1 (History, Optional Wrist Undo & Analytics)** | Optional `EDIT #<rev>` wrist-Undo mode (if not promoted to `P0`), local match history, built-in UE analytics, and `CSV`/`JSON` export. | `S4.2`, `S5.1–S5.2` |
+| **P2 (Gated / Parked)** | Native Workout Heart-Rate timestamp join (entry-gated on a real export) and parked ideas in Epic 6. | `S5.3`, `Epic 6` |
 
 ---
 
 ## 2. Technical Reference
 
-### Project & Module Contract
-- Keep scoring and replay in `src/core/scoreEngine.js` and wire formats in `src/core/traceCodec.js`. Both use relative ES module imports with explicit `.js` extensions and zero Node, DOM, or Vela imports.
-- Keep Node built-ins strictly in `tests/` or build scripts, and scope ESM configuration so CommonJS `aiot-toolkit` configuration still works.
-- Use `src/app.ux` for lifecycle and single-flight storage integration, `src/manifest.json` for routing and features, and `src/pages/setup`, `src/pages/index`, and `src/pages/summary` for the three band views.
+### Project Structure & Lean Docker Toolchain
+- Pure-JS engine lives in `src/core/` (`package.json` with `{"type": "module"}`, relative `.js` ES imports, zero DOM/Browser/Node dependencies), unit-tested via `node --test`.
+- Single lean Docker container (`Dockerfile`: pinned `node:22-alpine` Maintenance LTS + `esbuild`, BuildKit npm cache mount, non-root `node` user at `/home/node/app`, zero host installs; treat image size as a measured outcome).
+- Static PWA bundle builds to `dist/` and deploys automatically to **GitHub Pages** (`Settings → Pages → Source → GitHub Actions` on `main`, using Node 22, `npm ci`, `npm test`, `npm run build`).
+- **GitHub Pages sub-path contract (`/<repo>/`):** Use strictly relative paths (`./sw.js`, `manifest.webmanifest` with `"start_url": "./"`, `"scope": "./"`, relative asset paths). Precache shell, bundle, icons, and full keep-alive audio asset (or generate the 10s WAV in memory as a Blob object URL to avoid HTTP 206 range-request issues). Let any new Service Worker wait until a match finishes before offering an update—never reload mid-match.
 
-### Build, Manifest & Repo Hygiene
-- Configure `"config": { "designWidth": 192 }`, `"minAPILevel": 2` (required for native `<qrcode>`), `router.entry`, and `router.pages`.
-- Declare features **without** `@` in `src/manifest.json` (`system.storage`, `system.vibrator`, `system.brightness`) and use `@system.*` only in JS imports. Do not declare unnecessary device-info or health permissions.
-- Commit lockfile, toolkit config, and synthetic fixtures. Ignore `/sign/`, `*.pem`, `*.key`, `*.p12`, `*.jks`, `*.keystore`, `*.rpk`, `/dist/`, `/build/`, `node_modules/`, `coverage/`, `.env*`, `captures/`, and `exports/`. Document disposable debug signing for clean clones and back up the stable release key outside Git.
-
-### Six-Zone Layout (`192 × 490`, 325 ppi)
-These heights are the initial wrist-test layout. Curved top/bottom caps narrow toward their tips; measure visible and touchable areas separately, especially for `Undo` and `Menu`.
-
-| Top `y` | Height (Physical) | Contents |
-| ---: | :---: | :--- |
-| `0` | `60px` (~4.7 mm) | Clock, sets won by each team, live `MY UE` count |
-| `60` | `140px` (~10.9 mm) | `US` points, games, and team serve dot |
-| `200` | `48px` (~3.8 mm) | Mode (`GP` / `AD` / `TB` / `STB`) and `SWAP ENDS` cue |
-| `248` | `112px` (~8.8 mm) | `THEM` points, games, and team serve dot |
-| `360` | `66px` (~5.2 mm) | One-tap `MY UE` (`+1 Them` + log personal UE) |
-| `426` | `64px` (~5.0 mm) | `Undo` and `Menu` inside the measured bottom-cap safe area |
-
-### Match Record, Exclusive Counts & Finish Semantics
-- Freeze `matchId`, monotonic `revision`, `startTime`, `GP`/`AD` rule, format, deciding-set rule, and opening serving team into each match record.
-- Record one `{ t, code }` per accepted point (Unix seconds, injectable clock): `A` = we won, `B` = they won (other), `E` = they won via my UE.
-  - `Our points = A` · `Their points = B + E` · `Total points = A + B + E`
-  - **`My UEs / points lost`** = `E / (B + E)` (displays `—` when `B + E === 0`).
-  - Attribute each `E` to the set and serving team **before** the point is applied.
-- **Finish status and trace coverage are independent:** Persist `ACTIVE`, `WON`, or `FINISHED_MANUAL` plus `finishTime`. A manual finish can have a complete trace; `PARTIAL` strictly means point history exceeded `MAX_EVENTS`. Duration is elapsed time from Start to recorded finish (including court breaks). Reopening a manually finished match clears `finishTime`; finishing again records the new time.
-
-### Strict QR Alphanumeric Contract
-- Use a versioned payload restricted to the **QR Alphanumeric alphabet** (`0–9`, `A–Z`, space, `$%*+-./:` — **no commas**).
-- Start physical tests at **61 chars** for Summary (QR V3 at EC-M, `5 px/module` incl. 4-module quiet zone on `192px`) and **90 chars** per full-trace page (QR V4 at EC-M, `4 px/module`). Because Xiaomi's `<qrcode>` does not expose EC level or margin controls, center a black-on-white square with quiet zone on all four sides and let the physical gate confirm the usable limit.
+### Single-Writer Commit Rule & Wrist Arming Contract
+- **One enforceable writer:** Acquire an exclusive, app-scoped **Web Lock** (`navigator.locks.request('padel-scoreboard-writer', { ifAvailable: true }, ...)`) for the active match. Any second Chrome tab or installed PWA that cannot acquire the lock opens **read-only with wrist handlers disarmed**. When the previous owner exits, a new owner must **acquire the lock and reread storage** before accepting input.
+- **One command pipeline (phone & wrist):** `validate → derive next state (increment revision) → save one versioned record to localStorage → update phone UI & publish wrist metadata`.
+  - A failed storage write leaves the previous score and revision visible and withholds wrist success metadata.
+  - A failed wrist publish after a successful save leaves the point committed; **`Re-link Wrist`** republishes the committed score without scoring again or changing `revision`.
+- **Independent monotonic `revision`:** Every state-mutating save (point, Undo, opener correction, Finish, Resume) increments `revision` by 1 regardless of rally count; `Re-link Wrist` preserves `revision`.
+- **Keep-alive audio & wrist arming:** Preserve the spike's proven 10-second looping 8 kHz PCM WAV (`audio.volume = 0.005`, `>= 5s` Chromium threshold) + `setPositionState`.
+  - **Wrist scoring scope:** For **wrist input**, only explicit `navigator.mediaSession` action callbacks (`previoustrack`, `nexttrack`, `pause`, `play`) may submit scoring commands (on-phone buttons in `S2.1` always remain available to the lock-holding writer). Ordinary `<audio>` `play`, `playing`, and `pause` DOM events must **never** award points.
+  - **Exact arming lifecycle:** Arm wrist scoring **only** for the lock-holding writer of a live match **after a successful user-initiated `audio.play()` link**. Start **disarmed after reload**, disarm on finish or any observed interruption, and **keep armed through ordinary screen lock**. A rejected `audio.play()` leaves phone scoring available.
+  - **Originating-device caveat:** MediaSession provides no originating-device ID, so a Bluetooth headset can deliver the same callbacks as the band.
+- **Default wrist mapping (First Court Build — NO double-tap Undo):**
+  - `Prev` (`previoustrack`) = `US +1` (`A`)
+  - `Next` (`nexttrack`) = `THEM +1` (`B`)
+  - Single Center (`pause` or `play`) = atomic `MY UE` (`E`: `+1 Them` + personal UE)
+  - **Undo stays on the phone in `P0`.** *(Release rule: wrist UE tracking is mandatory; if `S3.2` disruption testing causes any phantom center point, disable one-tap center by default and complete `S4.2` `EDIT #<rev>` before re-running `S3.2`.)*
+- **Exclusive denominators:** `A` = Us won, `B` = Them won (other), `E` = Them won via my UE → `Our = A`, `Their = B + E`, `Total = A + B + E`, `My UEs / points lost = E / (B + E)` (`—` when `B + E === 0`). Attribute each `E` to set and serving team **before** applying the event.
 
 ---
 
 ## 3. Epics and Acceptance Criteria
 
-### Epic 0 — Hardware and Toolchain Gate (`P0`)
+### Epic 0 — Preserve Baseline, Lean Toolchain & Offline GitHub Pages Shell (`P0`)
 
-#### `S0.1` · `P0` · Reproducible Build and Shared Fixture
-- [ ] From a clean clone, generate a disposable debug signing key, configure `src/manifest.json` + `src/app.ux` per Section 2, build the minimal app, launch the `192 × 490` emulator, and record preliminary cap measurements in `docs/hardware-notes.md`.
-- [ ] Run one small pure-JS fixture through `node --test`, a bundled `.ux` page, and a local HTML file (using the same bundled source, networking disabled), confirming identical results.
-- **Verify:** `Node`, `AIoT-IDE Emulator`, and local browser.
+#### `S0.1` · `P0` · Commit Pivot, Lean Docker Toolchain & Baseline Record
+- [x] Preserve prior Vela `.rpk` toolchain at git tag `vela-s0.1-archive` and remove obsolete Vela files (`aiot-toolkit`, `src/manifest.json`, `src/pages/`, signing scripts).
+- [ ] Commit the PWA pivot to `main`, verify `docker compose run --rm --build dev sh -c "npm test && npm run build"` passes from a clean checkout of that commit with `0` files in host `node_modules/`, and record the measured Docker image size (`181 MB`) in `docs/hardware-notes.md`.
+- [ ] Record exact baseline hardware/software versions in `docs/hardware-notes.md` (commit hash, phone model, Android OS, Chrome version, Mi Fitness version, Band 9 Active firmware).
+- **Verify:** Clean-checkout Dockerized `npm test` + `npm run build` + `docker images`.
 
-#### `S0.2` · `P0` · Install, Disconnect, and In-Place Upgrade
+#### `S0.2` · `P0` · GitHub Pages HTTPS Deploy, Cold Offline Shell & Early Wrist Display Probe
 *Depends on `S0.1`.*
-- [ ] In `docs/deploy-guide.md`, record exact Band 9 SKU, firmware version, phone OS, successful installer and version (evaluating official Mi Fitness dev deploy alongside AstroBox, Notify, and ADB), signing method, and repeatable steps. Timebox the install spike; if the Global unit cannot launch the signed package, record the failing step and stop band feature work.
-- [ ] Repeat the checklist from a clean start: launch on the band, **disconnect the phone**, tap a counter, let the band sleep, and wake it. Install a higher `versionCode` of the same signed app in place and verify the saved test value survives.
-- **Verify:** `Physical Global Band 9`. Keep one recorded install and upgrade run.
-
-#### `S0.3` · `P0` · Measure the Limits the MVP Depends On
-*Depends on `S0.2`.*
-- [ ] Test and record separately: (1) normal sleep/wake, (2) watchface return + relaunch, and (3) process kill/reboot. Confirm whether synchronous `return true` in `onBackPress()` consumes swipe-back. Measure actual curved safe area on the wrist.
-- [ ] Measure per-value and total `@system.storage` limits with synthetic records. Estimate `MAX_EVENTS` accounting for two recovery slots, defaults, and post-limit scoring/one-step Undo. Record byte counts (`S1.3` confirms with production format and measures replay on band).
-- [ ] Render the longest candidate Summary (`<= 61` alnum chars) in a centered black-on-white `<qrcode>` in the straight screen section. On each of **two named phones**, achieve **≥ 9/10 scans within 2 seconds per attempt**, both indoors and in outdoor court lighting, comparing decoded text directly to the known input. Log firmware, payload, phones, lighting, attempts, and results.
-- [ ] If scanning fails, shorten payload or adjust rendering and repeat. A passing one-scan Summary is required for `P0`. (Full-trace scan, haptics, and HR investigation live in their own stories.)
-- **Verify:** `Physical Global Band 9` + two phones (using known fixtures so Epic 0 closes before codec/analyzer exist).
+- [ ] Add `.github/workflows/deploy-pages.yml` (`Settings → Pages → Source → GitHub Actions`): on push to `main`, use Node 22, run `npm ci`, `npm test`, `npm run build`, upload `dist/`, and deploy to `https://<owner>.github.io/<repo>/`.
+- [ ] Ship minimal PWA shell in `dist/`: `manifest.webmanifest` (`start_url: "./"`, `scope: "./"`), `./sw.js` precaching shell/bundle/icons/keep-alive audio (using in-memory Blob WAV or cached full-file Blob object URL to avoid HTTP 206 range issues), and a waiting-worker rule (never force reload during an active match).
+- [ ] Include fixed sample display strings (`*30-15 5-4 #42`, `*AD-40 6-5 #99`, `TB 10-10 6-6 #128`, `S:1-0 UE:12 SWAP`) in the probe page so early width observations can be taken on the Band 9 Active before `S3.1`.
+- [ ] **Cold offline start gate:** Open `https://<owner>.github.io/<repo>/` online once in Android Chrome → verify SW controls page & precache succeeded → add to Home Screen → close app → disable Wi-Fi and cellular (leave Bluetooth ON) → reopen from Home Screen → start 10s keep-alive loop with a tap → confirm `MediaSession` reaches Band 9 Active offline.
+- **Verify:** Live GitHub Pages URL + Android Chrome cold offline test with Band 9 Active.
 
 ---
 
-### Epic 1 — Pure-JS Rules, Trace, and Codecs (`P0` / `P1`)
+### Epic 1 — Pure-JS Padel Engine, Event Log & Single-Writer Persistence (`P0`)
 
-#### `S1.1a` · `P0` · Score an Ordinary Game and Set
-*Depends on `S0.2`.*
-- [ ] Cover standard points (`0 → 15 → 30 → 40 → Game`), `GP` at `40–40`, and `AD` from deuce through advantage back to deuce and on to a win.
-- [ ] Cover set progression: `6–4` wins, `6–5` continues, `7–5` ends the set, and `6–6` hands off to tie-break.
-- [ ] Freeze a copy of match rules into each new match so changing saved defaults never alters an active or resumed match.
-- **Verify:** Table-driven `Node unit tests` (`node --test`).
+#### `S1.1` · `P0` · Core Padel Scoring (Primary Format First), Tie-Breaks & Team Service
+*Depends on `S0.1`.*
+- [ ] Implement `src/core/scoreEngine.js` with frozen match start rules (`scoringMode`, `format`, `decidingSet`, `initialServer`) so changing defaults never alters an active or resumed match.
+- [ ] Implement primary format first (`BO3` + `GP`, plus `6–6` 7-point tie-break by 2): `0 → 15 → 30 → 40 → Game`, `6–5` continues, `7–5` wins set, `6–6` enters tie-break (`9–7` wins `7–6`).
+- [ ] Track serving **team** (alternates every normal game; tie-break serves `A, B, B, A, A, ...`; tie-break receiver opens next set) and `changeEndsAlert` (odd total games in set, every 6 tie-break points, clears on next point; swap preserves `US`/`THEM`).
+- [ ] Support manual `"Finish Now"` (`FINISHED_MANUAL`, preserving partial score & duration with no manufactured winner), distinguishing **Resume match** (restores every rally intact) from **Undo last point** (removes the last rally).
+- **Verify:** Table-driven `node --test` fixtures (mirrored opening-server tests + canonical `6–4 | 5–4 | 30–15` manual-finish fixture).
 
-#### `S1.1b` · `P0` · Apply Match Formats and Manual Early Finish
-*Depends on `S1.1a`.*
-- [ ] Support `1SET` (ends after 1 set), `BO3` (ends at 2 sets won), `BO3+STB` (`BO3` with deciding `STB10` at 1–1 sets), and `FREE` (continuous normal sets with selected `GP`/`AD` rule until manual finish).
-- [ ] Implement the canonical **90-minute manual-finish fixture** shared across engine, UI, and codec: finish at `6–4 | 5–4 | 30–15` (our perspective) with every completed game won to love → `A = 46`, `B + E = 33`; tag 2 losses in set 1 and 1 loss in set 2 as `E` → `B = 30`, `E = 3`, UEs per set = `[2, 1]`, duration = `5,400 s`, status = `FINISHED_MANUAL`, no winner. Also test a tied score and an unfinished tie-break.
-- [ ] Test reopening a manual finish (**Resume match** restores every rally intact) separately from undoing a match-winning rally (**Undo last point** removes that winning rally).
-- **Verify:** `Node unit tests` with an injected clock.
+#### `S1.2` · `P0` · Compact UTC Event Log, Independent Revisions, Replay Undo & Opener Correction
+*Depends on `S1.1`.*
+- [ ] Record each accepted rally with monotonic event ID, UTC Unix timestamp (`Date.now()` via injectable clock), and exclusive code (`A` = Us, `B` = Them other, `E` = My UE).
+- [ ] Maintain monotonic `revision` independent of rally count: point, Undo, opener correction, Finish, and Resume each increment `revision`; `Re-link Wrist` preserves it.
+- [ ] Replay `events` from frozen start rules for full-match Undo across game, set, tie-break, and match boundaries—restoring points, games, sets, serving team, side-change cue, UE denominators, and active status.
+- [ ] Support `Correct first serving team` during active play: increments `revision` for the same match, recomputing serve indicator and serve/return attribution while preserving scores, event order, timestamps, and UE totals.
+- [ ] Compute exclusive counts (`Us = A`, `Them = B + E`, `Total = A + B + E`) and `My UEs / points lost = E / (B + E)` (`—` when `B + E === 0`). Include a 1-event `[E]` fixture and a `point → Undo → different point → offline reload` fixture verifying distinct revisions, preserved timestamps, and exact replay.
+- **Verify:** `node --test`.
 
-#### `S1.2` · `P0` · Tie-Breaks, Team Service, and Change of Ends
-*Depends on `S1.1a–S1.1b`.*
-- [ ] At `6–6`, first to 7 by 2 wins the set `7–6` (test `9–7`). Deciding `STB10`: `10–9` continues, `11–9` ends the match; store and display distinctly as an STB so it never renders as an 11-game set.
-- [ ] Alternate serving **team** each ordinary game (v1 tracks serving team only, not individual doubles player order). For either tie-break opener, serve order by team is 1 point then blocks of 2 (`A, B, B, A, A, ...`), and the team that **received** the opening tie-break point serves first in the next set (where applicable).
-- [ ] Set `changeEndsAlert` after odd total games in a set and every 6 tie-break points; clear on next point. Changing ends preserves `US`/`THEM` identity.
-- **Verify:** Mirrored `Node unit tests` for both opening serving teams (per FIP Rules of Padel).
+#### `S1.3` · `P0` · Two-Line Wrist Display Formatter (`title` + `artist`)
+*Depends on `S1.2` (uses provisional width budgets—e.g. `title <= 20 chars`, `artist <= 20 chars`—until `S3.1` tunes them against measured Band 9 Active limits; `AD` tested as a display fixture until `S4.1`).*
+- [ ] Implement pure `formatWristDisplay(state, revision)` returning `{ title, artist }` prioritizing must-fit first-glance fields: live points + current games + serve `*` + `#rev` on `title`; sets + `UE` + `SWAP` on `artist`.
+- [ ] Ensure repeated scores (e.g. `40-40` Deuce) always differ visibly via `#rev`.
+- **Verify:** `node --test` covering `0-0`, `40-40`, `AD` fixture, `TB 10-10`, `SWAP`, 3-digit `UE`, and `FINISHED_MANUAL`.
 
-#### `S1.3` · `P0` · Compact Event Log, Undo, and Capacity Continuation
-*Depends on `S1.2` and `S0.3` storage measurement.*
-- [ ] One accepted scoring tap appends one `{ t, code }` event. Trace `[E]` produces 1 point lost, 1 personal UE, 1 total point, and `100%` `My UEs / points lost`; Undo restores empty score and `—`.
-- [ ] Within `MAX_EVENTS`, Undo pops the last event and replays from match start—restoring points, games, sets, serving team, cue, UE counts, and active status across game, set, TB/STB, and match boundaries, both in-session and after restart. Measure replay latency at `MAX_EVENTS` on the physical band and confirm the next deliberate touch is accepted promptly.
-- [ ] At the first event over `MAX_EVENTS`, keep the recorded prefix and persist live score, current serving team, match totals, per-set counts needed for Summary, and **one pre-point state for one-step Undo**. Display `"Trace full · score continues"` and mark subsequent exports `PARTIAL`. Show when earlier Undo is unavailable; a new point re-enables one-step Undo.
-- [ ] Test the last event that fits, the first two over the cap, undo/replacement, restart, finish, and export. A partial full-trace export identifies its last recorded point; Summary totals include points played after the cap.
-- **Verify:** `Node unit tests` (using a small cap) + measured-limit test on `Physical Global Band 9`.
-
-#### `S1.4` · `P0` · One-Scan Summary Codec
-*Depends on `S1.3` and `S0.3` scan measurement.*
-- [ ] Define a versioned strict QR-alphanumeric encoder, reference decoder, and hand-checked example strings round-tripping start time, duration, rules, finish status, score (including live game/TB/STB), exclusive `A`/`B`/`E` totals, per-set `E` counts, and trace coverage. Derive a winner only for `WON` matches.
-- [ ] Test: standard match, `6–4 | 5–4 | 30–15` manual mid-game finish, unfinished STB, 3-set match with 3-digit counts, and a `PARTIAL` match at capacity. Verify charset, max length, and one-scan budget.
-- [ ] For long `FREE` sessions whose set lines exceed one QR budget, fall back to a clearly marked **compact Summary** (aggregate sets, current/last set & live points, duration, finish status, `A`/`B`/`E` totals, trace coverage), identifying omitted set detail in both views. Document representable numeric ranges and test the longest compact fixture.
-- **Verify:** `Node unit tests` + `S0.1` cross-env fixture (including at least one hand-verified payload independent of the encoder).
-
-#### `S1.5` · `P1` · Paginated Full-Trace Codec
-*Depends on `S1.3–S1.4`.*
-- [ ] Freeze the exported revision. Every page uses strict QR alphanumeric characters (`<= 90` chars incl. headers) carrying version, `matchId`, revision, `page/total`, and integrity checksum. Reassembled payload includes frozen rules, opening team, start/finish metadata, trace coverage, and recorded events.
-- [ ] Quantize event times relative to match start in 5-second ticks and difference consecutive ticks (`0..Z` for `0..175s`). Specify rounding, `+` escape for gaps `> 175s`, and a deterministic backwards-clock policy (flagging affected time windows). Under a stable clock, reconstructed tap times stay within `±2.5s`.
-- [ ] Test: zero/half ticks, `175s` and `180s` gaps, long sleep, clock jump, undo/replacement, shuffled pages, identical duplicates, missing/conflicting pages, mixed matches, mixed revisions, and checksum failures.
-- **Verify:** `Node unit tests` + cross-env fixture (supplying known page fixtures to `S4.2` and `S5.1a`).
+#### `S1.4` · `P0` · Web-Lock Single Writer, Commit Pipeline & Corrupt-Storage Recovery
+*Depends on `S1.2`.*
+- [ ] Enforce one writer via an exclusive, app-scoped Web Lock (`navigator.locks.request('padel-scoreboard-writer', { ifAvailable: true }, ...)`). Any second tab or installed PWA opens **read-only with wrist handlers disarmed**; after the owner exits, the new owner must acquire the lock and reread storage before accepting input.
+- [ ] Route all phone and wrist mutations through one pipeline: `validate → derive next state → save one versioned record → update phone UI & publish wrist metadata`.
+- [ ] On storage write failure (e.g. quota error), keep previous score & revision visible, show an explicit error, and withhold wrist success metadata. If wrist publish fails after a successful save, keep the point committed so `Re-link Wrist` republishes without scoring again.
+- [ ] On corrupt saved JSON, **do not silently overwrite**—present a visible recovery screen (view/copy raw payload + explicit "Clear & Start Fresh" confirmation).
+- [ ] Maintain a separate bounded diagnostic log key in `localStorage` (raw wrist action, callback timestamp, audio state, committed revision) so disruption evidence survives Chrome termination.
+- **Verify:** `node --test` (quota error, corrupt JSON recovery, reload replay) + **real Android Chrome simultaneous tab + installed PWA lock test**.
 
 ---
 
-### Epic 2 — Match Start and On-Wrist Play (`P0`)
+### Epic 2 — MediaSession Bridge & Mobile Live Scoreboard (`P0`)
 
-#### `S2.0` · `P0` · Set Rules and Confirm Opening Serving Team
-*Depends on `S1.1b`, `S0.3`, and `S3.1`.*
-- [ ] Prefill `GP`/`AD` and format defaults (first run: `GP`, `BO3`). At each new match, ask **"Who serves first?"** (`US` / `THEM`), display the selection beside `Start`, and restore a resumed match's saved choice.
-- [ ] Start each match with its own frozen config. Provide **`Menu → Correct first serving team`** during active play, showing the current opener; saving commits a new revision for the same match and recomputes the serve dot and serve/return attribution while preserving scores, event order, timestamps, UE totals, and scoring rules.
-- [ ] Test opener correction after a completed game containing an `E`, during a tie-break, after restart, on export, and in summary-only post-cap mode.
-- **Verify:** `Node replay fixtures`, `AIoT-IDE Emulator`, and `Physical Global Band 9`.
+#### `S2.1` · `P0` · Match Setup, On-Phone Live Scoreboard & Match Over
+*Depends on `S1.1–S1.4`, `S0.2`.*
+- [ ] New Match setup screen: displays primary format (`BO3`, `GP`), asks **"Who serves first?"** (`US` / `THEM`), saves defaults, and freezes rules into the new match on `Start`.
+- [ ] Live phone scoreboard (always usable for lock-holding writer, clearly labeled read-only if another tab holds the lock): large `US`, `THEM`, `MY UE`, and `Undo` buttons, live score/serve/UE/`SWAP`/`#rev`, `Menu → Correct first serving team`, and `Menu → Finish Now` (with confirmation).
+- [ ] Match Over screen displays set lines, partial game score (if manual finish), finish reason, duration, exclusive `Us` / `Them (other)` / `My UE` counts, and `My UEs / points lost` (`—` if 0). Offers **`Undo last point`** (on won match), **`Resume match`** (on manual finish), and **`New Match`**.
+- **Verify:** Offline Android Chrome browser test (full match + reload recovery).
 
-#### `S2.1` · `P0` · Six-Zone Scoreboard Layout
-*Depends on `S0.3` and `S1.3`.*
-- [ ] Implement the 6-zone layout in Section 2 with clear visual hierarchy for Points, Games, and Sets for both teams on a `#000000` background, giving `MY UE` a distinct amber/orange accent.
-- [ ] Verify worst-case strings on wrist outdoors: `AD`, `11–9`, `SWAP ENDS`, and `UE 100`. Check clipping, outdoor readability, and reachability of **both** bottom-cap controls (`Undo` and `Menu`); tune padding/hit areas against wrist measurements.
-- **Verify:** `AIoT-IDE Emulator` + outdoors on `Physical Global Band 9`.
+#### `S2.2` · `P0` · MediaSession Wrist Bridge & `Re-link Wrist` Recovery
+*Depends on `S2.1`, `S1.3`, `S1.4`.*
+- [ ] Wire the spike's proven 10-second looping WAV (`volume = 0.005`) + `navigator.mediaSession` (`previoustrack` = `US`, `nexttrack` = `THEM`, `pause`/`play` = `MY UE`).
+- [ ] Enforce exact wrist arming: arm **only** for the lock-holding writer of a live match after a successful user-initiated `audio.play()` link; start disarmed after reload; disarm on finish or observed interruption; remain armed through ordinary screen lock; rejected `audio.play()` leaves phone scoring available.
+- [ ] Assert ordinary `<audio>` `play`, `playing`, and `pause` DOM events **never** award points.
+- [ ] Publish `title` and `artist` together as one `MediaMetadata` snapshot per committed revision (only after `S1.4` save succeeds), keeping `playbackState` consistent with actual playback.
+- [ ] Provide a prominent **`Re-link Wrist`** button calling `audio.play()` directly from the phone tap, handling rejection cleanly, restoring action handlers, and republishing the last committed score (preserving `revision`, with zero automatic retry loops competing with active calls).
+- **Verify:** Physical Android phone + Band 9 Active (unlocked, locked, and after audio interruption).
 
-#### `S2.2` · `P0` · Score and Immediately Correct a Point
-*Depends on `S2.1` and `S3.1`.*
-- [ ] Keep scoring locked until stored state hydrates. Each tap gesture logs at most one event. Apply a `350 ms` duplicate-tap guard on the same scoring control; a wake-only touch or swipe across a scoring zone records zero points.
-- [ ] **`THEM → Undo → MY UE`** must succeed even inside the `350 ms` window: Undo clears the previous scoring debounce, giving the replacement its accepted tap time so their score increases by 1, UE count increases by 1, and trace gains exactly one `E`.
-- [ ] Test adjacent `THEM`/`MY UE` taps, zone boundaries, immediate correction across a game boundary, and match-point correction (tap `THEM` on match point → `Undo last point` from Match Over → tap `MY UE` → finishes again with identical final score and +1 personal UE).
-- **Verify:** Deterministic input tests + `Physical Global Band 9` on wrist.
-
-#### `S2.3` · `P0` · Serve, Swap, and Action Acknowledgement Cues
-*Depends on `S2.2` and `S1.2`.*
-- [ ] Display the team serve dot, `GP`/`AD`/`TB`/`STB` mode, `SWAP ENDS` cue, and live `MY UE` count.
-- [ ] Briefly flash a distinct visual acknowledgement for `US`, `THEM`, `MY UE`, or `Undo`; confirm a rejected duplicate tap produces no acknowledgement.
-- **Verify:** `AIoT-IDE Emulator` + `Physical Global Band 9` across a game and tie-break.
+#### `S2.3` · `P0` · Cold Offline End-to-End Match Check
+*Depends on `S0.2`, `S2.2`.*
+- [ ] Deploy `S2.2` to GitHub Pages, open online once to precache, close app, disable Wi-Fi and cellular (leave Bluetooth ON), reopen from Home Screen, start match + wrist link with a tap, score `US`, `THEM`, and `MY UE` from the wrist, undo on phone, reload page, and confirm exact `matchId`, `revision`, and ordered `A`/`B`/`E` history survive offline.
+- **Verify:** Physical Android phone (airplane mode + Bluetooth ON) + Band 9 Active.
 
 ---
 
-### Epic 3 — Resilience and Comfort (`P0` / `P1`)
+### Epic 3 — Wrist Qualification & Real Court Field Tests (`P0` Gate)
 
-#### `S3.1` · `P0` · Single-Flight Save, Crash Recovery, and Resume
-*Depends on `S0.3` and `S1.3`. Implement in two increments:*
-- [ ] **Writer & Recovery:** Single app-level writer in `src/app.ux` with at most one `@system.storage` write in flight, coalescing pending updates to the latest revision. Alternate two slots with validity checks and monotonic revision ordering that survives `New Match`. Load the newest valid committed revision on restart; visibly indicate pending/failed saves and retry with latest state when storage succeeds.
-- [ ] **On-Band Integration:** Lock taps during hydration and route restored `ACTIVE` or finished matches to the matching view. Test rapid `A → E → Undo`, failed write, termination before commit, corrupt newest slot, and `New Match` while an older write is in flight. (An uncommitted tap may be lost on sudden power loss; every confirmed committed save must survive.)
-- **Verify:** `Node unit tests` with deterministic controllable async storage mock + `Physical Global Band 9`.
+#### `S3.1` · `P0` · Qualify the Wrist Display & Input Behavior
+*Depends on `S2.3`.*
+- [ ] Agree upfront on qualification thresholds before testing: **must-fit first-glance fields** (live points + current games + serve `*` + `#rev` on `title`; sets + `UE` + `SWAP` on `artist`) and **acceptable tap-to-visible-revision delay** (target: `<= 2.5s` median, `<= 5.0s` worst).
+- [ ] Test real formatted scores (`30-15`, `AD` fixture, `TB 10-10`, `#42`, `SWAP`, `UE 100`) on the physical Band 9 Active; record **first-glance truncation** and **scrolling** separately for `title` and `artist` in `docs/hardware-notes.md` and tune `S1.3` if needed.
+- [ ] Verify Band 9 Active repeated center taps (`pause` vs `play`), rapid updates, and leaving/reopening Music during a native Workout.
+- [ ] Measure tap-to-visible-revision delay with a **second observer or phone video** (page logs alone cannot measure wrist render time) and log results in `docs/hardware-notes.md`.
+- **Verify:** Physical Band 9 Active + diagnostic log + observer/video measurement.
 
-#### `S3.2` · `P0` · Protect Against Accidental Exit
-*Depends on `S0.3`, `S2.2`, and `S3.1`.*
-- [ ] During active play, synchronously consume the first supported swipe-back in `onBackPress()` and show confirmation. Confirmed exit waits for the current revision to commit; on failure, keep the scoreboard open and offer retry.
-- [ ] Verify swipe-back, screen-off, watchface return, and process kill separately (relying on `S3.1` for OS interruptions).
-- **Verify:** `Physical Global Band 9`.
-
-#### `S3.3` · `P1` · Haptics and Screen Wake Tuning
-*Depends on `S0.3` and `S2.3`.*
-- [ ] Verify `short`/`long` `@system.vibrator` modes on target firmware: pair `short` with normal points/`Undo` and `long` with `MY UE` or game/set win (one cue per action, alongside the visual flash).
-- [ ] If the QuickApp resumes cleanly after sleep (`S0.3`), default to normal screen sleep. If needed, provide a visible-only `Keep Awake` Menu toggle using `brightness.setKeepScreenOn`, always releasing it in `onHide` and `onDestroy`. Record battery start/end % over a 30–60 minute session in `docs/hardware-notes.md`.
-- **Verify:** `Physical Global Band 9`.
-
----
-
-### Epic 4 — Finish, Export, and Reset (`P0` / `P1`)
-
-#### `S4.1a` · `P0` · Finish, Inspect Stats, and Recover a Mistake
-*Depends on `S1.1b`, `S2.0`, `S2.2`, and `S3.1`.*
-- [ ] Auto-open Match Over on a match-winning rally. At any live score, `Menu → Finish Now` opens confirmation (`Cancel` returns to the exact rally; `Confirm` saves `FINISHED_MANUAL` and opens Match Over).
-- [ ] Display set lines, any live points or TB/STB, finish reason, duration, and UEs per set within recorded detail. Label exclusive counts `Us`, `Them (other)`, and `My UE`, plus `My UEs / points lost` (`—` if 0 lost). Clearly indicate `PARTIAL` coverage or compact Free Play summary when applicable.
-- [ ] After a win, **`Undo last point`** reopens play and removes the winning rally. After a manual finish, **`Resume match`** reopens play with **every rally intact** (regular Undo can then remove a rally if desired). **`New Match`** launches `S2.0` and safely supersedes the finished match.
-- **Verify:** Canonical `6–4 | 5–4 | 30–15` manual-finish fixture + match-point `B → Undo → E` correction + band relaunch after both finish paths.
-
-#### `S4.1b` · `P0` · Scan the Summary QR and Close the MVP
-*Depends on `S4.1a` and `S1.4`.*
-- [ ] Open Summary QR from either finish path and from a restored finished match. Render centered black-on-white `<qrcode>` in the straight screen section; scanned text must match on-band stats and fixture (including partial game score, finish reason, duration, and `E` counts).
-- [ ] **End-to-End Physical MVP Release Run (phone disconnected during play):** Pick opening server → score `A`/`B`/`E` → sleep/leave → resume → undo → finish a timed match mid-game → reconnect/scan with phone. Repeat the match-point `THEM → Undo → MY UE` correction case. Run the `S0.3` 2-phone indoor/outdoor scan protocol on the **longest production Summary**.
-- **Verify:** `Physical Global Band 9` + two phones. Archive fixture, expected output, scanned text, and hardware info.
-
-#### `S4.2` · `P1` · Paginated Full-Trace QR on the Wrist
-*Depends on `S1.5` and `S4.1b`.*
-- [ ] Freeze one revision when opening Full-Trace QR. Render `Page 1 / N`, `Prev`, and `Next`, marking truncated prefixes `PARTIAL` with coverage info. Run the `S0.3` scan protocol on the longest production trace page and record the usable limit.
-- [ ] Scan all pages of a 100+ point fixture off the band, reassemble via `S1.5` reference decoder, verify exact match, and record page count + elapsed scan time to evaluate courtside practicality.
-- **Verify:** `Physical Global Band 9` + phone (final `P1` integration pastes these captured pages into `S5.1a`).
-
-#### `S4.3` · `P1` · Safe Two-Step Reset
-*Depends on `S2.0` and `S3.1`.*
-- [ ] Place `Reset Match` inside `Menu` (separated from `Undo`). `Cancel` keeps the live match; `Confirm` discards it and opens `S2.0`. Test with an earlier save still in flight and relaunch to prove the old match stays discarded.
-- **Verify:** `AIoT-IDE Emulator` + `Physical Global Band 9`.
+#### `S3.2` · `P0` · Two Field Tests: 90-Minute Court Match & Disruption Suite
+*Depends on `S3.1`.*
+- [ ] **Field Test 1 (90-Minute Match):** Play a real 90-minute match with phone locked, unplugged, in its usual court bag, native Band 9 Active Workout active, and an **independent point tally** (paper/partner). Start with normal Android battery settings; change only one setting at a time if Doze interrupts playback, documenting the minimum required phone & Mi Fitness settings in `docs/setup-guide.md`.
+- [ ] **Field Test 2 (Disruption Suite):** Run five explicit disruptions: (1) incoming phone call, (2) WhatsApp voice note, (3) Bluetooth earbud connect & mid-rally removal, (4) far-court BLE disconnect/reconnect, and (5) killing Chrome mid-match + offline reopen + `Re-link Wrist`.
+  - **Protocol per disruption:** Record starting `revision` → trigger interruption **without touching the band** → verify **zero new events** → recover (`Re-link Wrist` if needed) → make **one deliberate wrist tap** → verify **exactly one matching event**!
+  - **Chrome kill verification:** Reopen offline and compare `matchId`, `revision`, ordered `A`/`B`/`E` history, serving team, and status (not just final score!), using observer log + `S1.4` persistent diagnostic log.
+- [ ] **Pass / Fallback Rule:** Pass when the 90-minute independent tally matches point-for-point, tap-to-wrist delay meets `S3.1` threshold, and interruptions create **zero phantom points** (any unsolicited `Prev`, `Next`, or Center event fails qualification). If one-tap Center causes a phantom point, **disable one-tap Center by default, promote `S4.2` (`EDIT #<rev>`) to `P0`, and re-run `S3.2`**.
+- **Verify:** Recorded field-test log in `docs/hardware-notes.md`.
 
 ---
 
-### Epic 5 — Offline Analysis (`P1` / `P2`)
+### Epic 4 — Post-Qualification Formats, Safe Reset & Conditional Wrist-Undo Mode
 
-#### `S5.1a` · `P1` · Decode Scanned Text Offline and Export
-*Depends on `S1.4` and `S1.5` (develop in parallel with `S4.2` using fixtures).*
-- [ ] Ship one self-contained local HTML file with shared engine/codec bundled inside, opening from disk with network disabled.
-- [ ] Summary paste displays all encoded fields and coverage. Full-trace paste validates `matchId`, revision, page completeness, and checksum; accepts shuffled pages and identical duplicates; clearly identifies missing/conflicting pages or mixed revisions while preserving pasted text for correction.
-- [ ] Download decoded data as `match.csv` or `match.json` with explicit coverage metadata.
-- **Verify:** `Node unit tests` + offline browser (then repeat with real captured scans from `S4.2`).
+#### `S4.1` · `P0` (Post-Qualification) · Complete Match Formats & Safe Two-Step Reset
+*Depends on `S3.2`.*
+- [ ] Add remaining rules/formats to engine & setup screen: **Advantage (`AD`)**, **`BO3+STB`** (`10-9` continues, `11-9` ends match, stored/displayed distinctly as `STB`), **`1SET`**, and **`FREE`** (continuous sets until manual finish).
+- [ ] Add `Menu → Reset Match` with explicit 2-step confirmation (`Cancel` / `Confirm Reset`) so an active match cannot be wiped accidentally.
+- **Verify:** `node --test` + Android Chrome PWA.
 
-#### `S5.1b` · `P1` · Explain Recorded Unforced Errors
-*Depends on `S5.1a` and `S1.2`.*
-- [ ] Replay a hand-scored fixture and classify each `E` from the **pre-point** score and serving team: `40–40` GP, break point, set point, and tie-break (allow overlapping labels while counting each event once in totals).
-- [ ] Show UEs while our team served vs received. Define **service hold rate** as `completed ordinary service games won / completed ordinary service games served` (`—` at zero opportunities; exclude incomplete games and tie-breaks from denominator).
-- [ ] Define a **UE cluster** as `>= 2` `E` events within `3` consecutive points (merging overlapping windows). For each 15-minute elapsed window, show observed `E / (B + E)`, points lost, and total points `n` (strictly observational wording).
-- [ ] Compute point-level metrics strictly over the recorded prefix, display coverage, and flag time windows affected by clock discontinuities. Summary-only input shows aggregate stats only.
-- **Verify:** Expected-results table covering 1-event `[E]`, deciding point, incomplete game, empty time window, and truncated trace (`Node` + offline browser).
+#### `S4.2` · `P1` *(Promoted to `P0` Prerequisite If `S3.2` Rejects One-Tap Center)* · Explicit `EDIT #<rev>` Wrist-Undo Mode
+*Depends on `S2.2` (independent of `S3.2` so it can unblock `S3.2` if needed).*
+- [ ] From live score, Center (`play`/`pause`) opens **`EDIT #42`** / **`<UNDO   UE>`** without changing any score (repeated center taps leave it open).
+- [ ] `Prev` undoes revision `#42`; `Next` logs one `MY UE` (`E`) against `#42`—accepted **once** only against revision 42, ignoring repeated arrows until Center returns to live scoring.
+- [ ] Any phone edit, interruption, or stale revision invalidates the prompt and consumes any late arrow confirmation without scoring; `Cancel` stays available on the phone.
+- **Verify:** `node --test` state machine + physical Band 9 Active wrist test.
 
-#### `S5.2` · `P2` · Heart-Rate Timestamp Join
-*Entry Gate: One real timestamped HR export from a named source with verified units, timezone offset, sampling interval/gaps, and overlap with a test match.*
-- [ ] Join match points/UEs to the nearest HR sample within a documented tolerance window, marking gaps as `missing` (no silent interpolation).
-- [ ] Display observed match Avg/Max HR and HR on `MY UE` vs non-UE points (with sample counts), and export merged CSV.
-- **Verify:** `Node unit tests` with a sanitized fixture derived from the real export.
+---
+
+### Epic 5 — Match History, Built-In UE Analytics & Native Workout HR Join (`P1` / `P2`)
+
+#### `S5.1` · `P1` · Local Match History List
+*Depends on `S4.1`.*
+- [ ] Persist completed and manually finished matches in a versioned local history list on the phone (`localStorage`), allowing the player to browse past matches, inspect summaries, and delete entries.
+- **Verify:** `node --test` + Android Chrome offline reload test.
+
+#### `S5.2` · `P1` · Built-In UE Analytics & One-Tap `CSV`/`JSON` Export
+*Depends on `S5.1`.*
+- [ ] Compute and display directly inside the PWA (zero QR scanning!):
+  - Exclusive `A`/`B`/`E` totals and `My UEs / points lost` (`—` if 0).
+  - **Pre-point Clutch UEs** (`40-40` GP, break point, set point, tie-break — classified from score & server **before** applying each event; overlapping labels allowed while counting each event once in totals).
+  - **Our Team Serving vs Returning** UE split and **ordinary service hold rate** (`completed ordinary service games won / completed ordinary service games served`, `—` at zero opportunities; exclude incomplete games and tie-breaks).
+  - **UE Clusters** (`>= 2` `E` events within `3` consecutive points, merging overlapping windows) and **observed UE rate by 15-minute elapsed window** showing `E / (B + E)`, points lost, and total points `n`.
+- [ ] One-tap download of decoded match data as `match.csv` and `match.json`.
+- **Verify:** Expected-results `node --test` table (1-event `[E]`, deciding point, incomplete game, empty window) + Android Chrome download test.
+
+#### `S5.3` · `P2` · Native Band 9 Active Workout Heart-Rate Timestamp Join
+*Entry Gate: One real timestamped Workout HR export from Mi Fitness / Health Connect / Strava with verified units, timezone offset, sampling cadence/gaps, and confirmed overlap with a recorded test match.*
+- [ ] Join UTC match point/UE timestamps to the nearest workout HR sample within a documented tolerance, marking gaps as `missing` (no silent interpolation).
+- [ ] Display observed Avg/Max HR and HR on `MY UE` vs non-UE points (with sample counts), and export merged CSV.
+- **Verify:** `node --test` with sanitized fixture derived from the real workout export.
 
 ---
 
 ### Epic 6 — Parked (`P2`)
-2026 FIP **Star Point**, individual doubles server order, live on-band HR *(only revisited if `S0.3` uncovers a usable API)*, post-match context tags (side of court, effort `1–5`), Partner UE / Winner / Net-vs-Glass buttons, on-band match history, companion phone app (`@system.interconnect`), and other band/watch screen sizes remain parked in `P2`.
+Soft audio confirmation beeps, 2026 FIP **Star Point**, individual doubles server order, post-match context tags (court side, effort `1–5`), Partner UE / Winner / Net-vs-Glass buttons, cloud backup/sync, and native Vela/WearOS/Garmin ports.
 
 ---
 
@@ -244,26 +207,22 @@ These heights are the initial wrist-test layout. Curved top/bottom caps narrow t
 
 | Applies To | Evidence Required |
 | :--- | :--- |
-| **Every story** | Each acceptance example has an expected result, declared verification method, and recorded pass. Tag hardware records with SKU, firmware, and build. |
-| **Shared JS** | `node --test` passes with deterministic fixtures; `src/core/` uses relative `.js` ES imports with zero Node/DOM/Vela dependencies. Re-run the cross-environment fixture whenever shared code or bundling changes. |
-| **Band UI / hardware** | Signed `.rpk` builds cleanly; emulator checks pass for affected views; physical checks pass for behaviors named in the story with recorded inputs, results, and limits. |
-| **Persistence & wake** | `S3.1`/`S3.2` verify commit, failure, and recovery; `S3.3` verifies `keepScreenOn` release on `onHide`/`onDestroy`. Re-run whenever persistence or wake code changes. |
-| **`P0` release** | Pass `S4.1b` end to end with both finish paths and the `S0.3` scan threshold on the longest production Summary. Reopen a manual finish with its last rally intact, and attach a decoded scan agreeing with the expected score. |
+| **Every story** | Each acceptance case has an expected result, declared verification method, and recorded pass. Tag hardware observations with tested commit/build, phone model, Android/Chrome/Mi Fitness versions, and Band 9 Active firmware. |
+| **Pure-JS core (`src/core/`)** | `node --test` passes deterministically via Docker; zero DOM/Browser/Node imports; relative `.js` ES imports only. |
+| **PWA, persistence & recovery** | `npm run build` succeeds cleanly in lean Docker; `S1.4`/`S2.2` verify Web Lock mutual exclusion in real Chrome, save-before-publish, injected quota error + corrupt-JSON recovery before overwrite, zero phantom points from `<audio>` DOM events, and **mid-match SW upgrade recovery** (deploy build B during active match on A → close all clients so B activates → cold-start offline → recover saved match cleanly under B). |
+| **`P0` court release** | Cold offline GitHub Pages start passes (`S2.3`), wrist width & video/observer latency meet `S3.1` thresholds, and both the 90-minute match tally and 5-disruption suite pass with zero phantom points and intact history (`S3.2`). |
 
 ---
 
 ## 5. Risk Register
 
-The implementing developer records measurements; the backlog owner decides device or scope changes. Re-run hardware checks after firmware or renderer updates.
-
 | Risk & Exposure | Trigger / Evidence | Owner Action |
 | :--- | :--- | :--- |
-| **Global firmware blocks install/upgrade** · *Med / Crit* | Signed minimal `.rpk` fails clean `S0.2` run or in-place upgrade loses saved test value. | Developer logs SKU, firmware, signer, and failing step. Owner decides whether to change target before band feature work. |
-| **Summary fails to scan outdoors** · *Med / High* | Any named phone/lighting case misses `S0.3` 9/10 threshold or decodes altered text. | Developer adjusts size, quiet zone, or payload and retests; `P0` stays open until all pass. Trace-page scan runs in `P1`. |
-| **Stale or corrupt write wins** · *Med / High* | Crash, mid-write reset, or corrupt newest slot recovers wrong committed revision. | Developer reproduces callback order in `S3.1`, fixes writer/recovery, and repeats on band. |
-| **Stored match exceeds quota** · *Med / High* | Two slots + worst-case record breach measured quota or post-cap Undo fails. | Developer reserves headroom, lowers `MAX_EVENTS`, and retests scoring, resume, one-step Undo, and `PARTIAL` export. |
-| **Mis-taps or unreachable cap controls** · *High / Med* | Wrist run drops `THEM → Undo → MY UE`, scores a swipe, or misses bottom-cap `Undo`. | Developer adjusts hit areas/debounce in `S2.1–S2.2` and repeats on wrist. |
-| **Wrong serving team biases stats** · *Med / Med* | Correcting opener alters a score or leaves serve dot/splits stale. | Developer replays mirrored `S1.2`/`S2.0` fixture and verifies corrected revision after restart. |
-| **Long breaks or clock jumps distort time** · *High / Med* | `> 175 s` gap overflows, clock moves backwards, or stable-clock tolerance fails. | Developer tests `+` escapes, preserves event order, and flags affected windows in `S1.5`/`S5.1b`. |
-| **Full-trace multi-QR is impractical** · *Med / Med* | Player abandons 100+ point scan or loses track of pages. | Developer records page count, retries, and total scan time; owner decides whether to shorten export or improve navigation. |
-| **HR not available in a real export** · *Med / Med* | No timestamped HR export overlaps a test match. | Leave `S5.2` parked until the entry fixture exists. |
+| **Call, voice note, or headset causes phantom point** · *High / High* | Any disruption in `S3.2` adds an event without an intentional wrist tap. | Block `<audio>` DOM events; if one-tap Center misfires, disable one-tap Center by default, promote `S4.2` (`EDIT #<rev>`) to `P0`, and re-run `S3.2`. |
+| **Android Doze / battery killer freezes locked tab** · *Med / High* | Locked 90-minute match (`S3.2`) stops receiving wrist taps or drops MediaSession. | Start on default settings, then change one setting at a time (Chrome battery, Mi Fitness background permissions) and document minimum settings in `docs/setup-guide.md`. |
+| **Audio focus stolen silently** · *Med / Med* | Band stops reflecting score after call/notification. | Player uses phone UI + manual `Re-link Wrist` (`S2.2`); never auto-retry against active calls. |
+| **Two-tab / PWA overwrite** · *Med / High* | Open Chrome tab and Home-Screen PWA clobber saved match. | Enforce `S1.4` exclusive Web Lock (second client opens read-only with wrist disarmed) and verify in real Chrome. |
+| **Quota error or corrupt storage loses match** · *Low / High* | Write throws or stored JSON fails parse. | Keep previous state visible on quota failure; show raw backup + explicit reset prompt on corrupt JSON before overwriting (`S1.4`). |
+| **SW upgrade activates between closes mid-match** · *Med / High* | Build B deploys while match on Build A is active and user closes/reopens offline. | Waiting SW never reloads mid-match; verify closing all clients + offline cold-start under Build B recovers saved match cleanly (DoD). |
+| **Wrist text truncates critical info** · *Med / Med* | `AD`, `10-10`, `#42`, or `SWAP` cut off on first glance (`S3.1`). | Shorten labels in `S1.3` from measured `S0.2`/`S3.1` widths and re-verify. |
+| **Workout HR cannot be exported with timestamps** · *Med / Med* | No real Band 9 Active workout export overlaps a test match. | Keep `S5.3` parked until entry fixture exists. |

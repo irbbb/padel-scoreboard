@@ -1,97 +1,41 @@
-# Research & Spike Learnings: Padel Scoreboard, Vitals & Match Trace for Xiaomi Mi Band 9
+# Research & Spike Learnings — Padel Scoreboard for Xiaomi Smart Band 9 Active
 
-## 1. Is It Possible?
-**Yes—with one important hardware caveat regarding live vitals.**
+## 1. Hardware Discovery (`S0.2` Go/No-Go Gate Result)
+During `S0.2` physical testing, the target band was identified as the **Xiaomi Smart Band 9 Active** (`172 × 320` TFT LCD, closed lightweight proprietary RTOS)—not the standard Xiaomi Smart Band 9 (`192 × 490` AMOLED, Xiaomi Vela OS).
 
-- **Scoreboard + Unforced Errors + Match Trace:** **100% possible standalone on the Mi Band 9** using a native **Xiaomi Vela JS QuickApp (`.rpk`)**. No phone is needed on court.
-- **Live Vitals (Heart Rate) inside the QuickApp:** **Likely NOT directly accessible via public Vela APIs.** Xiaomi restricts raw PPG / continuous Heart Rate sensors to first-party system apps (`@system.sensor` only exposes accelerometer, compass, and pressure), and the Mi Band 9 **does not allow running a native Workout in the background** while another QuickApp is open.
-- **Vitals Workaround (Gated on Real Export):** Enable Mi Band 9's built-in **All-Day 1-Minute Heart Rate Monitoring** in Mi Fitness (which runs passively in the background). Our QuickApp records exact Unix timestamps per event so you can correlate them externally *once we verify a real timestamped HR export from Mi Fitness / Health Connect / Strava actually includes those 1-minute samples*. *(We still check HR API availability in `S0.3`.)*
+- **Native `.rpk` QuickApps:** **Not supported** on Xiaomi Smart Band 9 Active (no Vela QuickApp runtime; confirmed by both Notify for Xiaomi `"update failed this band model may not support this feature yet"` and BandBurg device identification).
+- **Vela `.rpk` gate verdict:** **No-Go** for Band 9 Active. The early hardware gate worked as intended and prevented weeks of wasted Vela UI work.
 
 ---
 
-## 2. Options Explored & Trade-Offs
+## 2. Pivot Architecture — Proven Live on Hardware!
 
-### Platform Options
-| Option | Pros | Cons | Verdict |
-| :--- | :--- | :--- | :--- |
-| **A. Native Vela JS QuickApp (`.rpk`)** | Standalone on court, full touch UI, short/long vibration, local storage, built-in `<qrcode>` (`minAPILevel: 2`), `onBackPress()`. | Sideloading required (no global App Store); no public HR API; tight RAM and `192×490` screen. | **Selected** |
-| **B. Custom Watchface (`.bin`)** | Easy install. | Cannot run custom logic, counters, or traces. | **Rejected** |
-| **C. Companion Phone App + Band Notifications** | Easy mobile stack. | Requires phone on court; clunky tap UX. | **Rejected for MVP** |
-
-### Internal Engine & Undo Options (Spiked & Refined After Review)
-| Option | Summary | Verdict |
-| :--- | :--- | :--- |
-| **Coupled UI + Reverse-Math Undo** | Put scoring rules in `index.ux` and subtract on Undo. | **Rejected** — Hard to test; breaks across set/tie-break/UE boundaries. |
-| **30 Full State Snapshots + Separate Event Trace** | Store both 30 full snapshots (~4.9 KB) and a growing event list. | **Superseded** — Redundant storage cost and risk of snapshot/trace bloat. |
-| **Pure-JS Event-Log Replay (`events[]` + Frozen Start Rules)** | Store only frozen match config + compact `{ t, code }` event log. Undo pops the last event and replays from start up to measured `MAX_EVENTS`; beyond the cap, continue scoring with one-step Undo and `PARTIAL` export flag. | **Selected** — Clean in-session and post-restart Undo, tiny storage footprint, impossible for score and UE trace to desync, graceful behavior past capacity. |
-
-### Unforced Error (UE) Input UX Options
-| Option | How It Works | Verdict |
-| :--- | :--- | :--- |
-| **2-Tap Separate `+UE` Button** | Tap Opponent `+1`, then tap `+UE`. | **Rejected** — Slow mid-match, easy to forget 2nd tap or desync UE from score. |
-| **1-Tap `MY UE` Button (`+1 Them + Log UE`)** | Dedicated pill (`66px` ≈ `5.2 mm` @ 325 ppi) below Opponent zone: 1 tap awards Opponent `+1` AND logs exclusive event `E` at that exact score & timestamp. | **Selected** — Matches padel rules, 1 tap, automatically links every UE to exact pre-event score/server & timestamp. |
-
-### Exporting the Match Trace Off the Band
+### Options Explored for Band 9 Active (Zero Sideloaded APKs)
 | Option | How It Works | Pros | Cons | Verdict |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Built-in `<qrcode>` Component on Band** | Render strict QR-alphanumeric string on the `192×490` OLED (`minAPILevel: 2`); scan with phone camera after match. | **Zero companion app needed**; works on Android & iOS; built into Vela JS. | Xiaomi exposes no EC-level or margin controls; requires conservative caps (`≤ 61` chars V3 / `≤ 90` chars V4) and **zero commas**. | **Selected for MVP** |
-| **2. `@system.interconnect` Companion App** | Push JSON over BLE to custom Android/iOS app. | Automatic sync. | Requires building & signing a separate mobile app + Global firmware hurdles. | **Deferred to Post-MVP (P2)** |
-| **3. On-Band Summary Screen** | Immediate score, duration, exclusive `A`/`B`/`E` totals, `My UEs / points lost`, UEs per set. | Instant post-match insight with zero extra tools. | Cannot chart or correlate externally alone. | **Selected alongside QR Export** |
+| **A. Android Chrome Offline PWA (`navigator.mediaSession`) + Band Music Controls** | Phone in court bag runs an offline PWA playing a 10s ultra-quiet looping WAV; Band 9 Active's native **Music Control** screen displays live score (`title` + `artist`) and sends `Prev` / `Play-Pause` / `Next` taps back to JS. | **Zero APKs**, zero Play Store installs, works **with phone screen locked**, works **during a native Band 9 Active Workout** (real continuous Heart Rate!), full match trace stored directly on phone (no QR export needed!), ultra-lean Docker dev container. | Needs phone within Bluetooth range (~10–15 m, e.g., court bag on bench); 3 wrist buttons (`Prev`, `Play/Pause`, `Next`) mean Undo uses a button combo/gesture or phone screen; must guard against Android battery killer on 90-min sessions. | **Selected** |
+| **B. Native Android Companion App (APK)** | Custom Kotlin MediaSession app. | Full Android background foreground-service control. | Requires building & sideloading an APK (rejected by user policy) + Android SDK/Gradle bloat. | **Rejected** |
+| **C. Phone-Only PWA (No Wrist Control)** | Score only on phone screen on bench. | Simple. | Must walk to phone after points. | **Subsumed by Option A** (Option A also has a full phone touchscreen UI!) |
 
 ---
 
-## 3. Verified Hardware, Manifest & Codec Details
+## 3. Empirical Learnings from Live Hardware Spike (Band 9 Active + Android Chrome)
 
-### Vela Manifest & Project Contract
-- Files: `src/manifest.json` alongside `src/app.ux`.
-- Scaling: `"config": { "designWidth": 192 }` (not top-level!).
-- Features in `manifest.json` omit `@`: `{"name": "system.storage"}`, `{"name": "system.vibrator"}`, `{"name": "system.brightness"}` (use `@system.*` only in JS imports).
-- Native `<qrcode>` requires `"minAPILevel": 2` — must be verified on physical Band 9 firmware.
-- Band 9 `@system.vibrator` documents `short` and `long` vibration modes (pair with visual flash to distinguish 4 event types).
+### Verified Live Behaviors
+1. **Chromium `>= 5s` Audio Threshold (Caught in Spike!):** Chrome on Android **suppresses** the Android MediaSession notification for `<audio>` clips shorter than 5 seconds (`2s` WAV failed; **`10s` WAV** with real PCM sine amplitude at `audio.volume = 0.005` + `setPositionState` immediately registered the MediaSession and mirrored onto the Band 9 Active!).
+2. **Android Companion Prerequisite:** Only **one** companion app (**Mi Fitness**) should hold Bluetooth to the band, with **Android Notification Access** enabled for Mi Fitness and Chrome notifications enabled.
+3. **Phone Locked Operation:** Verified **working** — `Prev`, `Next`, and repeated `Play/Pause` all fired reliably and pushed updated metadata to the wrist while the Android phone remained locked.
+4. **Mid-Workout Operation (Major Upgrade Over Vela!):** Verified **working** — starting a native Band 9 Active Workout (continuous Heart Rate + calories) and swiping right to **Music Controls** allows scoring and logging `MY UE` while natively recording real workout vitals!
+5. **Two-Line Wrist Display:** Verified **both `title` and `artist`** lines display on the Band 9 Active Music Control screen, with acceptable wrist-update latency.
 
-### Screen & Layout Geometry (`192×490` Capsule, 325 ppi)
-- Curved top (`y: 0–60`) and bottom (`y: 426–490`) caps narrow every row (usable width drops to `106px` at `y = 16px`).
-- **Safe 6-Zone Vertical Budget (`490px` total):**
-  - `y:   0–60`  (`60px`, ~`4.7 mm`, curved ~`139px` width): Top Cap — Clock + Sets + Live UE counter
-  - `y:  60–200` (`140px`, ~`10.9 mm`, full `192px`): **`US`** tap zone (`+1 Us`)
-  - `y: 200–248` (`48px`, ~`3.8 mm`, full `192px`): Center Bar — Mode (`GP`/`AD`/`TB`/`STB`) + `SWAP ENDS` cue
-  - `y: 248–360` (`112px`, ~`8.8 mm`, full `192px`): **`THEM`** tap zone (`+1 Them` normal)
-  - `y: 360–426` (`66px`, ~`5.2 mm`, full `192px`): **`MY UE`** pill (`+1 Them` + log `MY_UE`)
-  - `y: 426–490` (`64px`, ~`5.0 mm`, curved ~`143px` width): Bottom Cap — **Undo** (immediate, no scoring debounce) & **Menu**
-
-### Strict QR Alphanumeric Codec & Capacity Reality
-- **Official QR Alphanumeric charset:** `0-9`, `A-Z`, space, `$`, `%`, `*`, `+`, `-`, `.`, `/`, `:` — **commas are NOT allowed** (a single comma switches the encoder to Byte mode and halves capacity!).
-- **Whole-pixel pitch on `192px` width (including required 4-module white quiet zone on all 4 sides):**
-  - **QR V3 (`37` modules total → `5 px/module`):** `77` chars (EC-L) / **`61` chars (EC-M)** ← target for Summary QR.
-  - **QR V4 (`41` modules total → `4 px/module`):** `114` chars (EC-L) / **`90` chars (EC-M)** ← target for each Paginated Full-Trace QR frame.
-- **Long gap handling:** Quantize elapsed time from `matchStart` in 5-second ticks and encode tick deltas (`0..Z` for `0..175s`) plus a `+` escape for gaps `> 175s` (prevents 3+ minute breaks from overflowing while keeping reconstructed tap time within `±2.5s` under a stable clock).
-- **Paginated integrity:** Freeze exported revision and include `matchId`, `rev`, `page/total`, checksum, frozen rules, and `initialServer` so shuffled/missing/mixed-revision scans are cleanly detected.
-
-### Persistence & Sideloading Risks (Hardware Gates in Epic 0)
-- `@system.storage` is async callback-based with no guaranteed 5 KB quota or crash-atomicity → measure actual quota on Band 9, enforce a `MAX_EVENTS` cap (with `PARTIAL` export flag if exceeded), and use a **single-flight app-level writer** with dual storage slots and monotonic revision.
-- Sideloading paths (official Mi Fitness dev deploy, AstroBox, Notify for Xiaomi, ADB) must be proven on the actual Global Band 9 SKU/firmware/phone OS including **standalone phone-disconnected run** and **in-place `.rpk` upgrade with a saved match**. Never cross-flash Chinese firmware onto a Global band.
+### Open Ergonomic Details to Measure in Epic 0
+1. **Exact Character Width:** Measure how many characters fit on Band 9 Active's `title` and `artist` lines before horizontal scrolling or truncation so our live score format stays readable at a 1-second glance.
+2. **90-Minute Lock-Screen Survival:** Test whether Chrome's MediaSession + 10s looping audio survives a 30–90 minute locked session on the user's Android phone without Doze/battery optimization killing it (document "Unrestricted" battery setting for Chrome if needed).
+3. **3-Button Wrist Mapping & Undo Ergonomics:** With 3 reliable wrist buttons (`Prev`, `Next`, `Play/Pause`), validate the cleanest mistake-proof mapping for `US +1`, `THEM +1`, `MY UE`, and `Undo` (e.g., double-tap `Play/Pause` vs explicit `Prev+Next` or Undo-via-double-tap-Play/Pause).
+4. **Offline PWA Delivery:** Serve over HTTPS (e.g., GitHub Pages or local HTTPS/localhost) with a Service Worker + Web App Manifest so Chrome **"Add to Home Screen"** runs 100% offline on court with zero mobile data required.
 
 ---
 
-## 4. Padel Domain Edge Cases Captured
-1. **Scoring Modes (v1):** **Golden Point (Punto de Oro)** and **Advantage (`AD`)** (2026 FIP *Star Point* noted as P2 option). Match rules freeze at match start.
-2. **Match Formats & Manual Finish:** Best of 3, Best of 3 with 10-point deciding Super Tie-Break (stored distinctly so `11–9` never looks like an 11-game set), Single Set, Free Play, plus **"Finish Now"** for timed court bookings without manufacturing a winner.
-3. **Tie-Break (6–6) & Team Server Rotation:** First to 7 (win by 2); if Team A opens the tie-break, serve order by team is `A, B, B, A, A, ...`, and **Team B opens the next set** regardless of who served the last tie-break point. *(v1 tracks serving team only, not individual doubles player rotation.)*
-4. **Exclusive Event Denominators:** `A` = Us, `B` = Them normal, `E` = My UE → `Our = A`, `Their = B + E`, `Total = A + B + E`, `My UEs / points lost = E / (B + E)` (`—` if `0` lost). Clutch classification uses the score & server **before** applying the event.
-
----
-
-## 5. `S0.1` Toolchain & Docker Spike Learnings
-
-### Verified Lean Docker Build (`node:20-alpine`)
-- **`aiot-toolkit@2.0.5`** installs and compiles a signed `.rpk` in **~1.2 s** inside **`node:20-alpine`** + `apk add --no-cache openssl` (~11.7 MiB) — **no `glibc`/Debian image** and **no `NODE_OPTIONS=--openssl-legacy-provider`** flag required.
-- **Image size optimization:** Clearing npm's cache in the same `RUN` layer (`npm cache clean --force && rm -rf /root/.npm`) removes **~301 MB** of dead tarballs (reducing the image from ~790 MB to ~490 MB).
-- **Disposable debug signing:** `openssl req -newkey rsa:2048 -nodes -keyout sign/debug/private.pem -x509 -days 365 -out sign/debug/certificate.pem -subj "/CN=PadelDebug"` is immediately accepted by `aiot build` (`sign/debug/` stays out of Git via `.gitignore`).
-- **Compiled manifest validation:** `aiot build` accepted `src/manifest.json` with `"config": { "designWidth": 192 }`, `"minAPILevel": 2`, `"deviceTypeList": ["watch"]`, and non-`@` feature names (`system.storage`, `system.vibrator`, `system.brightness`), producing a valid `9.1 KB` signed `.rpk`.
-
-### Shared Pure-JS Fixture Across Node, Vela `.ux`, and Offline HTML
-- **Scoped ESM (`src/core/package.json` = `{"type": "module"}`):** Allows `src/core/*.js` to use clean relative `.js` ES imports that run natively in `node --test` (both Node 20 in Docker and Node 22 on host) without making root `package.json` ESM (protecting CommonJS `aiot-toolkit` config).
-- **Note on `.rpk` packaging:** `aiot build` bundles imported `src/core/*.js` modules into `build/pages/index/index.js` cleanly; `src/core/package.json` (23 bytes) is copied as a harmless static file into `build/core/package.json`.
-- **Offline `file://` HTML bundling:** Browsers block `<script type="module" src="...">` over `file://` due to CORS. Using a lightweight **`esbuild`** step (~10 MB in container) to bundle `src/core/` into an inline IIFE inside a single offline HTML file avoids fragile regex-inlining bugs while keeping the container lean.
-- **GUI Emulator boundary:** CLI build, signing, unit tests, and offline HTML bundling run 100% inside the lean Docker container. Launching the visual `192 × 490` Xiaomi Band 9 Simulator requires Xiaomi's desktop GUI (**AIoT-IDE** on Windows/macOS/Linux); keeping QEMU/X11/VNC out of Docker avoids multi-GB container bloat.
-
+## 4. Padel Domain & Core Engine Learnings (Unchanged & Reusable!)
+- **Pure-JS Core (`src/core/`):** Decoupled ES modules with zero browser/DOM imports (`node --test`), keeping scoring rules, tie-breaks, team server rotation, side-change cues, exclusive `A`/`B`/`E` denominators (`My UEs / points lost = E / (B + E)`), manual `"Finish Now"` (`FINISHED_MANUAL`), and event-log replay Undo 100% testable on PC.
+- **No QR Code Needed:** Because the match lives directly in the phone's `localStorage`, post-match analysis, multi-match history, and 1-tap `match.csv` / `match.json` download happen right inside the same PWA!
