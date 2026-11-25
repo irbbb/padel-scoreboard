@@ -507,3 +507,42 @@ test('missing locks enters UNAVAILABLE, rejected lock sets ERROR, and release ra
   await relPromise;
   assert.equal(locks.held.size, 0);
 });
+
+test('skipped publish ({ skipped: true }) returns wristPublished:false without masking lastPublishError', async () => {
+  const storage = createMockStorage();
+  const locks = createMockLocks();
+  let mode = 'throw';
+
+  const store = createMatchStore({
+    storage,
+    locks,
+    now: () => T0,
+    publishWrist: async () => {
+      if (mode === 'throw') throw new Error('metadata failed');
+      if (mode === 'skip') return { skipped: true };
+      return { skipped: false };
+    },
+  });
+
+  await store.tryAcquireWriter();
+  const startRes = await store.startNewMatch({ matchId: 'm-skip', config: { initialServer: 0 }, nowMs: T0 });
+  assert.equal(startRes.ok, true);
+  assert.equal(startRes.wristPublished, false);
+  assert.equal(store.getSnapshot().lastPublishError, 'metadata failed');
+
+  // Skipped publish while unlinked must NOT clear lastPublishError
+  mode = 'skip';
+  const skippedRes = await store.commit((r) => addPoint(r, 'A', T0 + 1000), T0 + 1000);
+  assert.equal(skippedRes.ok, true);
+  assert.equal(skippedRes.changed, true);
+  assert.equal(skippedRes.wristPublished, false);
+  assert.equal(store.getSnapshot().lastPublishError, 'metadata failed');
+
+  // Genuine successful republish clears lastPublishError without changing revision
+  mode = 'ok';
+  const pubRes = await store.republishWrist(T0 + 2000);
+  assert.equal(pubRes.wristPublished, true);
+  assert.equal(store.getSnapshot().lastPublishError, null);
+  assert.equal(store.getSnapshot().record.revision, 2);
+  await store.releaseWriter();
+});

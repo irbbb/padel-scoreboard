@@ -133,8 +133,11 @@ export function createMatchStore({
     const seq = ++publishSeq;
     const job = publishQueue.then(async () => {
       try {
-        await publishWrist(snapshotState, snapshotRecord);
-        if (seq === publishSeq && lastPublishError !== null) {
+        const result = await publishWrist(snapshotState, snapshotRecord);
+        if (result && result.skipped === true) {
+          return { wristPublished: false, publishError: null };
+        }
+        if (lastPublishError !== null) {
           lastPublishError = null;
           safeNotify();
         }

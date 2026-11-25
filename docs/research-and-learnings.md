@@ -56,4 +56,14 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 - **Save-Before-Publish Separation:** Separating `storage.setItem` errors (`stage: 'save'`, rolls back / keeps prior state, withholds wrist publish) from `publishWrist` errors (`stage: 'publish'`, keeps committed state so `Re-link Wrist` republishes without re-scoring or bumping `revision`) guarantees zero phantom or lost points.
 - **Separate Bounded Diagnostic Key:** Storing disruption diagnostics in its own bounded key (`padelScore.diag.v1`, FIFO cap e.g. 200 entries) ensures diagnostic write failures never block a match save, and evidence survives Chrome termination.
 
+---
+
+## 7. `S2.1–S2.2` Mobile UI & `MediaSession` Wrist Bridge Spike Learnings
+- **In-Memory 10-Second PCM WAV Blob (`160,044` bytes):** Generating a 10-second 8 kHz 16-bit mono PCM sine wave (`amplitude = 120`, played at `audio.volume = 0.005`) in pure JS takes ~10 ms, produces a valid RIFF/WAVE payload with non-zero PCM samples (avoiding Chrome's `< 5s` MediaSession suppression), and avoids HTTP 206 byte-range issues completely when running offline.
+- **Separate Command Arming From Final Metadata Publish:** When a live match transitions to `WON` or `FINISHED_MANUAL`, clearing `navigator.mediaSession` action handlers synchronously in `onStateChange` immediately disarms wrist scoring, while allowing the queued `publishWrist` job to publish one final `WIN`/`LOSS`/`END` `MediaMetadata` snapshot and then pause the keep-alive audio.
+- **Unlinked Phone Scoring Must Stay Error-Free:** When the wrist bridge is `DISARMED` or `INTERRUPTED` (e.g., after a page reload or phone call), `publishWrist` skips `MediaMetadata` updates instead of throwing—so on-phone scoring never flashes false publish errors, while real `MediaMetadata` failures when `ARMED` still surface `lastPublishError`.
+- **Guarding Against Audio Focus Loss & Phantom Points:** Ordinary `<audio>` DOM events (`play`, `playing`, `pause`, `ended`, `error`) only sync `playbackState` and detect unexpected interruptions (`status = 'INTERRUPTED'`)—they never score or auto-arm. Inside `MediaSession` callbacks, checking `status === 'ARMED' && !audio.paused && !audio.ended` provides an extra defense if Android pauses audio during a call or notification before delivering a stale callback. Screen lock (`visibilitychange` → `hidden`) intentionally leaves the bridge armed.
+- **Preserving User-Gesture Activation on `Start Match`:** Because `matchStore.startNewMatch()` writes to `localStorage` synchronously before returning its Promise, tapping `Start Match` can commit revision 1 and invoke `audio.play()` synchronously inside the same click handler—linking the wrist in one tap while still falling back cleanly to phone-only scoring if `audio.play()` rejects.
+
+
 
