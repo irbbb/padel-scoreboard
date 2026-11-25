@@ -78,3 +78,20 @@
 2. **Match Formats & Manual Finish:** Best of 3, Best of 3 with 10-point deciding Super Tie-Break (stored distinctly so `11–9` never looks like an 11-game set), Single Set, Free Play, plus **"Finish Now"** for timed court bookings without manufacturing a winner.
 3. **Tie-Break (6–6) & Team Server Rotation:** First to 7 (win by 2); if Team A opens the tie-break, serve order by team is `A, B, B, A, A, ...`, and **Team B opens the next set** regardless of who served the last tie-break point. *(v1 tracks serving team only, not individual doubles player rotation.)*
 4. **Exclusive Event Denominators:** `A` = Us, `B` = Them normal, `E` = My UE → `Our = A`, `Their = B + E`, `Total = A + B + E`, `My UEs / points lost = E / (B + E)` (`—` if `0` lost). Clutch classification uses the score & server **before** applying the event.
+
+---
+
+## 5. `S0.1` Toolchain & Docker Spike Learnings
+
+### Verified Lean Docker Build (`node:20-alpine`)
+- **`aiot-toolkit@2.0.5`** installs and compiles a signed `.rpk` in **~1.2 s** inside **`node:20-alpine`** + `apk add --no-cache openssl` (~11.7 MiB) — **no `glibc`/Debian image** and **no `NODE_OPTIONS=--openssl-legacy-provider`** flag required.
+- **Image size optimization:** Clearing npm's cache in the same `RUN` layer (`npm cache clean --force && rm -rf /root/.npm`) removes **~301 MB** of dead tarballs (reducing the image from ~790 MB to ~490 MB).
+- **Disposable debug signing:** `openssl req -newkey rsa:2048 -nodes -keyout sign/debug/private.pem -x509 -days 365 -out sign/debug/certificate.pem -subj "/CN=PadelDebug"` is immediately accepted by `aiot build` (`sign/debug/` stays out of Git via `.gitignore`).
+- **Compiled manifest validation:** `aiot build` accepted `src/manifest.json` with `"config": { "designWidth": 192 }`, `"minAPILevel": 2`, `"deviceTypeList": ["watch"]`, and non-`@` feature names (`system.storage`, `system.vibrator`, `system.brightness`), producing a valid `9.1 KB` signed `.rpk`.
+
+### Shared Pure-JS Fixture Across Node, Vela `.ux`, and Offline HTML
+- **Scoped ESM (`src/core/package.json` = `{"type": "module"}`):** Allows `src/core/*.js` to use clean relative `.js` ES imports that run natively in `node --test` (both Node 20 in Docker and Node 22 on host) without making root `package.json` ESM (protecting CommonJS `aiot-toolkit` config).
+- **Note on `.rpk` packaging:** `aiot build` bundles imported `src/core/*.js` modules into `build/pages/index/index.js` cleanly; `src/core/package.json` (23 bytes) is copied as a harmless static file into `build/core/package.json`.
+- **Offline `file://` HTML bundling:** Browsers block `<script type="module" src="...">` over `file://` due to CORS. Using a lightweight **`esbuild`** step (~10 MB in container) to bundle `src/core/` into an inline IIFE inside a single offline HTML file avoids fragile regex-inlining bugs while keeping the container lean.
+- **GUI Emulator boundary:** CLI build, signing, unit tests, and offline HTML bundling run 100% inside the lean Docker container. Launching the visual `192 × 490` Xiaomi Band 9 Simulator requires Xiaomi's desktop GUI (**AIoT-IDE** on Windows/macOS/Linux); keeping QEMU/X11/VNC out of Docker avoids multi-GB container bloat.
+

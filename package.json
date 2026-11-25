@@ -1,0 +1,17 @@
+{
+  "name": "padel-scoreboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Padel Scoreboard and Unforced Error tracker for Xiaomi Smart Band 9 (Vela QuickApp)",
+  "scripts": {
+    "sign:debug": "node scripts/gen-debug-sign.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build:rpk": "node scripts/build-rpk.mjs",
+    "build:html": "node scripts/build-offline-html.mjs",
+    "build": "npm run build:rpk && npm run build:html"
+  },
+  "devDependencies": {
+    "aiot-toolkit": "2.0.5",
+    "esbuild": "0.28.2"
+  }
+}
