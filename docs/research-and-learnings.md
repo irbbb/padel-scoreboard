@@ -48,3 +48,12 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 - **Compact 2-Line Wrist Strings:** Using `*` directly beside the serving team's points (`*30-15`, `AD-40*`) and `#rev` keeps worst-case active strings within **14–15 characters** per line (e.g., `*10-10 TB #128` / `S1-1 UE:100 SWP`), leaving comfortable headroom under the provisional 20-char budget.
 - **Test Fixture Subtlety Caught:** Simulating a `6–4` set requires interleaving games (`4-4`, then `6-4`) rather than 6 straight games (which ends Set 1 at `6–0` and spills the remaining 4 games into Set 2!).
 
+---
+
+## 6. `S1.4` Web Lock, Commit Pipeline & Diagnostic Log Spike Learnings
+- **Web Lock Lifetime & Async Release:** `navigator.locks.request(name, { mode: 'exclusive', ifAvailable: true }, cb)` holds the lock only while the Promise returned by `cb` remains pending. `releaseWriter()` must be `async` and await the outer `locks.request(...)` Promise so the lock is actually released before a successor tries to acquire it.
+- **Secure Context Requirement:** `navigator.locks` exists only in Secure Contexts (`https://` GitHub Pages, `http://localhost`). Injecting `{ storage, locks }` into pure `src/core/matchStore.js` keeps `src/core/` 100% browser-free for `node --test` and allows explicit `LOCK_UNAVAILABLE` read-only fallback if ever opened on plain LAN HTTP.
+- **Save-Before-Publish Separation:** Separating `storage.setItem` errors (`stage: 'save'`, rolls back / keeps prior state, withholds wrist publish) from `publishWrist` errors (`stage: 'publish'`, keeps committed state so `Re-link Wrist` republishes without re-scoring or bumping `revision`) guarantees zero phantom or lost points.
+- **Separate Bounded Diagnostic Key:** Storing disruption diagnostics in its own bounded key (`padelScore.diag.v1`, FIFO cap e.g. 200 entries) ensures diagnostic write failures never block a match save, and evidence survives Chrome termination.
+
+
