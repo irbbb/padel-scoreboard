@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build & RPK outputs
+dist/
+build/
+*.rpk
+coverage/
+
+# Local signing keys & certificates (never commit! Back up release keys outside Git)
+/sign/
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# Environment & secrets
+.env
+.env.*
+
+# Local device captures & exported personal HR/match dumps
+captures/
+exports/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,15 @@
+Process:
+- Do a research about the topic
+- Spike it exploring different options
+- Loop until its clear
+- Capture the learnings
+- Discard the spike
+- Explain it in simple technical language as this is for a mid junior
+- Plan it
+- Define selfcontained prompts to externally review the plan
+- Based on the external reviews, evaluate and correct the plan
+- Simplify it
+- Do it
+- Define selfcontained prompts to externally review the work
+- Based on the external reviews, evaluate and correct the work
+- Commit it
