@@ -1,20 +1,6 @@
 import { normalizeWristCenterMode, WRIST_CENTER_MODES } from '../core/wristEditMode.js';
 import { formatWristDisplay } from '../core/wristDisplay.js';
 
-export const TAPE_VIEWBOX_WIDTH = 360;
-export const TAPE_VIEWBOX_HEIGHT = 82;
-export const TAPE_MAX_INDIVIDUAL_POINTS = 72;
-export const TAPE_BIN_COUNT = 60;
-
-function escapeAttr(str) {
-  return String(str ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
 function round1(n) {
   return Math.round(n * 10) / 10;
 }
@@ -41,6 +27,57 @@ function formatSetupPreview(initialServer, scoringMode) {
 }
 
 /**
+ * Shared Band 9 Active 3-button key layout used by both describeBandControls() and
+ * getBandGuideSteps() so the Live Band footer, Edit banner, and Visual Guide never drift apart.
+ */
+export function buildBandKeysForPhase(phase, { wristCenterMode = WRIST_CENTER_MODES.EDIT_MODE, canUndo = true } = {}) {
+  const isEditMode = normalizeWristCenterMode(wristCenterMode) === WRIST_CENTER_MODES.EDIT_MODE;
+
+  if (phase === 'WARMUP') {
+    return Object.freeze([
+      Object.freeze({ symbol: '<', label: 'US serves', tone: 'us', disabled: false, highlight: false }),
+      Object.freeze({ symbol: '||', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
+      Object.freeze({ symbol: '>', label: 'THEM serves', tone: 'them', disabled: false, highlight: false }),
+    ]);
+  }
+
+  if (phase === 'PROMPT') {
+    return Object.freeze([
+      Object.freeze({
+        symbol: '<',
+        label: canUndo ? 'Undo last point' : 'Undo unavailable',
+        tone: canUndo ? 'us' : 'muted',
+        disabled: !canUndo,
+        highlight: false,
+      }),
+      Object.freeze({ symbol: '||', label: 'Keep Edit open', tone: 'neutral', disabled: false, highlight: false }),
+      Object.freeze({ symbol: '>', label: 'My error · +1 THEM', tone: 'ue', disabled: false, highlight: false }),
+    ]);
+  }
+
+  if (phase === 'AWAITING_LIVE') {
+    return Object.freeze([
+      Object.freeze({ symbol: '<', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
+      Object.freeze({ symbol: '||', label: 'Resume scoring', tone: 'accent', disabled: false, highlight: true }),
+      Object.freeze({ symbol: '>', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
+    ]);
+  }
+
+  // LIVE (or SETUP_LIVE)
+  return Object.freeze([
+    Object.freeze({ symbol: '<', label: 'US +1', tone: 'us', disabled: false, highlight: false }),
+    Object.freeze({
+      symbol: '||',
+      label: isEditMode ? 'Edit point' : 'My error · +1 THEM',
+      tone: isEditMode ? 'neutral' : 'ue',
+      disabled: false,
+      highlight: false,
+    }),
+    Object.freeze({ symbol: '>', label: 'THEM +1', tone: 'them', disabled: false, highlight: false }),
+  ]);
+}
+
+/**
  * Derives the exact Band 9 Active readout and plain-language button cues directly from
  * the authoritative controller view-model (never inventing separate action legality).
  * Live key assignments are shown only on Setup preview or when the active writer is ARMED.
@@ -59,14 +96,11 @@ export function describeBandControls(vm) {
         showKeys: true,
         headline: 'Starts with warmup server pick',
         subcue: 'On band: < selects US, > selects THEM (no point scored). Then normal scoring starts.',
+        compactKeysText: '< US · > THEM',
         title: preview.title,
         artist: preview.artist,
         emphasis: 'neutral',
-        keys: Object.freeze([
-          Object.freeze({ symbol: '<', label: 'US serves', tone: 'us', disabled: false, highlight: false }),
-          Object.freeze({ symbol: '||', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
-          Object.freeze({ symbol: '>', label: 'THEM serves', tone: 'them', disabled: false, highlight: false }),
-        ]),
+        keys: buildBandKeysForPhase('WARMUP', { wristCenterMode: mode }),
         afterWarmupNote: isEditMode
           ? 'During play: < US +1 · || Edit point (< Undo / > MY UE) · > THEM +1'
           : 'During play: < US +1 · || My error (+1 THEM) · > THEM +1',
@@ -80,20 +114,11 @@ export function describeBandControls(vm) {
       subcue: isEditMode
         ? '< gives US a point · > gives THEM a point · || opens Edit point (< Undo / > My error).'
         : '< gives US a point · > gives THEM a point · || logs My error (+1 THEM).',
+      compactKeysText: isEditMode ? '< US · || Edit · > THEM' : '< US · || MY UE · > THEM',
       title: preview.title,
       artist: preview.artist,
       emphasis: 'neutral',
-      keys: Object.freeze([
-        Object.freeze({ symbol: '<', label: 'US +1', tone: 'us', disabled: false, highlight: false }),
-        Object.freeze({
-          symbol: '||',
-          label: isEditMode ? 'Edit point' : 'My error · +1 THEM',
-          tone: isEditMode ? 'neutral' : 'ue',
-          disabled: false,
-          highlight: false,
-        }),
-        Object.freeze({ symbol: '>', label: 'THEM +1', tone: 'them', disabled: false, highlight: false }),
-      ]),
+      keys: buildBandKeysForPhase('LIVE', { wristCenterMode: mode }),
       afterWarmupNote: null,
     });
   }
@@ -114,6 +139,7 @@ export function describeBandControls(vm) {
       showKeys: false,
       headline: 'Band controls managed by scoring tab',
       subcue: 'This tab is viewing only. Check the scoring tab for live Band controls, or tap Take over above.',
+      compactKeysText: 'Viewing only',
       title: '',
       artist: '',
       emphasis: 'neutral',
@@ -131,6 +157,7 @@ export function describeBandControls(vm) {
         showKeys: false,
         headline: 'Band controls unavailable in this browser',
         subcue: 'Score directly using the phone buttons above.',
+        compactKeysText: 'Phone scoring only',
         title: '',
         artist: '',
         emphasis: 'neutral',
@@ -146,6 +173,7 @@ export function describeBandControls(vm) {
         subcue: hasPendingEditBarrier
           ? 'Tap Re-link Band above first. Once linked, press || on your Band to resume arrow scoring.'
           : 'Tap Re-link Band above to restore Band 9 Active Music Controls.',
+        compactKeysText: 'Interrupted · Re-link Band',
         title: '',
         artist: '',
         emphasis: 'neutral',
@@ -160,6 +188,7 @@ export function describeBandControls(vm) {
       subcue: hasPendingEditBarrier
         ? 'Tap Re-link Band above first. Once linked, press || on your Band to resume arrow scoring.'
         : 'Tap Re-link Band above to start Band 9 Active Music Controls.',
+      compactKeysText: 'Not linked · Re-link Band',
       title: '',
       artist: '',
       emphasis: 'neutral',
@@ -189,14 +218,11 @@ export function describeBandControls(vm) {
       showKeys: true,
       headline: 'Press || to resume scoring',
       subcue,
+      compactKeysText: 'Tap || on Band to resume',
       title,
       artist,
       emphasis: 'resume',
-      keys: Object.freeze([
-        Object.freeze({ symbol: '<', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
-        Object.freeze({ symbol: '||', label: 'Resume scoring', tone: 'accent', disabled: false, highlight: true }),
-        Object.freeze({ symbol: '>', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
-      ]),
+      keys: buildBandKeysForPhase('AWAITING_LIVE', { wristCenterMode: mode }),
       afterWarmupNote: null,
     });
   }
@@ -210,20 +236,11 @@ export function describeBandControls(vm) {
       subcue: canUndo
         ? '< undoes the last point · > logs your error (+1 THEM) · || keeps Edit open.'
         : 'Undo is unavailable at 0 points · > logs your error (+1 THEM) · || keeps Edit open.',
+      compactKeysText: canUndo ? '< Undo · > MY UE' : '> MY UE',
       title,
       artist,
       emphasis: 'edit',
-      keys: Object.freeze([
-        Object.freeze({
-          symbol: '<',
-          label: canUndo ? 'Undo last point' : 'Undo unavailable',
-          tone: canUndo ? 'us' : 'muted',
-          disabled: !canUndo,
-          highlight: false,
-        }),
-        Object.freeze({ symbol: '||', label: 'Keep Edit open', tone: 'neutral', disabled: false, highlight: false }),
-        Object.freeze({ symbol: '>', label: 'My error · +1 THEM', tone: 'ue', disabled: false, highlight: false }),
-      ]),
+      keys: buildBandKeysForPhase('PROMPT', { wristCenterMode: mode, canUndo }),
       afterWarmupNote: null,
     });
   }
@@ -234,14 +251,11 @@ export function describeBandControls(vm) {
       showKeys: true,
       headline: 'Who serves first?',
       subcue: '< selects US and > selects THEM. Neither awards a point.',
+      compactKeysText: '< US serves · > THEM serves',
       title,
       artist,
       emphasis: 'warmup',
-      keys: Object.freeze([
-        Object.freeze({ symbol: '<', label: 'US serves', tone: 'us', disabled: false, highlight: false }),
-        Object.freeze({ symbol: '||', label: 'Inactive', tone: 'muted', disabled: true, highlight: false }),
-        Object.freeze({ symbol: '>', label: 'THEM serves', tone: 'them', disabled: false, highlight: false }),
-      ]),
+      keys: buildBandKeysForPhase('WARMUP', { wristCenterMode: mode }),
       afterWarmupNote: null,
     });
   }
@@ -253,20 +267,11 @@ export function describeBandControls(vm) {
     subcue: isEditMode
       ? '< gives US a point · > gives THEM a point · || opens Edit point.'
       : '< gives US a point · > gives THEM a point · || logs My error (+1 THEM).',
+    compactKeysText: isEditMode ? '< US · || Edit · > THEM' : '< US · || MY UE · > THEM',
     title,
     artist,
     emphasis: 'live',
-    keys: Object.freeze([
-      Object.freeze({ symbol: '<', label: 'US +1', tone: 'us', disabled: false, highlight: false }),
-      Object.freeze({
-        symbol: '||',
-        label: isEditMode ? 'Edit point' : 'My error · +1 THEM',
-        tone: isEditMode ? 'neutral' : 'ue',
-        disabled: false,
-        highlight: false,
-      }),
-      Object.freeze({ symbol: '>', label: 'THEM +1', tone: 'them', disabled: false, highlight: false }),
-    ]),
+    keys: buildBandKeysForPhase('LIVE', { wristCenterMode: mode }),
     afterWarmupNote: null,
   });
 }
@@ -296,10 +301,11 @@ export function shouldReloadOnControllerChange({ requestedWorker, newController,
 /**
  * Returns visual steps for the Band 9 Active Quick Guide sheet.
  * Shows the warmup server-picker step ONLY while the Band displays WHO SERVES? (or Setup is set to Pick on Band).
- * When a server is already fixed or selected, leads directly with live scoring keys so the player never awards an unintended point.
+ * Shares buildBandKeysForPhase() so guide schematics stay identical to live Band key legality.
  */
 export function getBandGuideSteps(wristCenterMode, { showWarmupStep = false } = {}) {
-  const isEditMode = normalizeWristCenterMode(wristCenterMode) === WRIST_CENTER_MODES.EDIT_MODE;
+  const mode = normalizeWristCenterMode(wristCenterMode);
+  const isEditMode = mode === WRIST_CENTER_MODES.EDIT_MODE;
   const rawSteps = [];
 
   if (showWarmupStep) {
@@ -308,6 +314,7 @@ export function getBandGuideSteps(wristCenterMode, { showWarmupStep = false } = 
       bandTitle: 'WHO SERVES? #1',
       bandArtist: '< US   THEM >',
       caption: 'After the 4-touch warmup, tap < for US or > for THEM. No point is added.',
+      keys: buildBandKeysForPhase('WARMUP', { wristCenterMode: mode }),
     });
   }
 
@@ -318,18 +325,21 @@ export function getBandGuideSteps(wristCenterMode, { showWarmupStep = false } = 
         bandTitle: '*30-15 2-1 #9',
         bandArtist: 'S0-0 UE:1',
         caption: 'As soon as the server is set (including 0-0), < awards US +1, > awards THEM +1, and || opens Edit point.',
+        keys: buildBandKeysForPhase('LIVE', { wristCenterMode: mode }),
       },
       {
         title: 'Choose Undo or My Error',
         bandTitle: 'EDIT #9',
         bandArtist: '<UNDO   UE>',
         caption: 'Inside Edit: tap < to Undo last point, or > to log My UE (+1 THEM). At 0 points, Undo is unavailable — cancel on phone if opened by mistake.',
+        keys: buildBandKeysForPhase('PROMPT', { wristCenterMode: mode, canUndo: true }),
       },
       {
         title: 'Press || to resume scoring',
         bandTitle: 'UE *30-30 #10',
         bandArtist: 'TAP || FOR LIVE',
         caption: 'Important: arrows (< and >) stay inactive after Undo or My UE so double-taps never mis-score. Press || before scoring the next rally.',
+        keys: buildBandKeysForPhase('AWAITING_LIVE', { wristCenterMode: mode }),
       }
     );
   } else {
@@ -339,18 +349,21 @@ export function getBandGuideSteps(wristCenterMode, { showWarmupStep = false } = 
         bandTitle: '*30-15 2-1 #9',
         bandArtist: 'S0-0 UE:1',
         caption: 'As soon as the server is set (including 0-0), < awards US +1, > awards THEM +1, and || logs My UE (+1 THEM) immediately.',
+        keys: buildBandKeysForPhase('LIVE', { wristCenterMode: mode }),
       },
       {
         title: 'Undo on phone (or switch to Edit point)',
         bandTitle: '0-0 2-1 #10',
         bandArtist: 'S0-0 UE:1',
         caption: 'In 1-Tap My Error mode, Undo is on the phone screen. Switch to Edit point in Match Menu to undo from your wrist.',
+        keys: Object.freeze([]),
       },
       {
         title: 'Check Band before locking phone',
         bandTitle: 'US SERVES #2',
         bandArtist: '0-0 0-0 S0-0',
         caption: 'Open Band Music Controls once to confirm PadelScore appears without pressing an arrow, then lock your phone.',
+        keys: Object.freeze([]),
       }
     );
   }
@@ -402,245 +415,379 @@ export function computePointShare(counts) {
 }
 
 /**
- * Pure geometry model for the post-match Rally Tape.
- * Uses analytics.timeline (derived from the authoritative scoring replay) so completed-set
- * dividers match real set boundaries (including tie-breaks inside their set and open unfinished sets).
- * Automatically aggregates dense matches (> 72 rallies) into fixed horizontal bins so 300+ rally
- * matches stay readable with zero colliding bars.
+ * Builds TV padel scoreboard grid columns strictly from derived match state & status.
+ * - ACTIVE: always includes completed sets + current set + PTS (or TB during tie-break) + activeServer.
+ * - WON: completed sets only (never appends a bogus 0-0 next set), no serve dot.
+ * - FINISHED_MANUAL: completed sets + partial set only if games/points/tie-break are non-zero
+ *   (or a fallback S1 0-0 column when stopped with 0 points), no serve dot.
  */
-export function buildMatchTapeData(analytics) {
-  const timeline = Array.isArray(analytics?.timeline) ? analytics.timeline : [];
-  const totalPoints = timeline.length;
+export function buildScoreboardColumns(state) {
+  const setHistory = Array.isArray(state?.setHistory) ? state.setHistory : [];
+  const status = state?.status ?? 'ACTIVE';
+  const games = Array.isArray(state?.games) ? state.games : [0, 0];
+  const points = Array.isArray(state?.points) ? state.points : [0, 0];
+  const pointsLabel = Array.isArray(state?.pointsLabel) ? state.pointsLabel : ['0', '0'];
+  const inTieBreak = Boolean(state?.inTieBreak);
 
-  if (totalPoints === 0) {
+  const cols = setHistory.map((entry, idx) => {
+    const us = Number(entry?.games?.[0]) || 0;
+    const them = Number(entry?.games?.[1]) || 0;
+    const hasTb = Array.isArray(entry?.tieBreakPoints) && entry.tieBreakPoints.length === 2;
+    const tbUs = hasTb ? Number(entry.tieBreakPoints[0]) : null;
+    const tbThem = hasTb ? Number(entry.tieBreakPoints[1]) : null;
+    const usSup = hasTb && us < them ? tbUs : null;
+    const themSup = hasTb && them < us ? tbThem : null;
+
     return Object.freeze({
-      isEmpty: true,
-      aggregated: false,
-      totalPoints: 0,
-      usPoints: 0,
-      themOtherPoints: 0,
-      myUePoints: 0,
-      setDividers: Object.freeze([]),
-      setLabels: Object.freeze([]),
-      marks: Object.freeze([]),
+      label: `S${idx + 1}`,
+      us,
+      them,
+      usSup,
+      themSup,
+      tbUs,
+      tbThem,
+      isCurrent: false,
     });
-  }
+  });
 
-  const padX = 12;
-  const usableW = TAPE_VIEWBOX_WIDTH - padX * 2;
-  const midY = 38;
-  const maxBarH = 22;
+  let showPoints = false;
+  let pointsHeader = inTieBreak ? 'TB' : 'PTS';
 
-  let usPoints = 0;
-  let themOtherPoints = 0;
-  let myUePoints = 0;
-
-  const completedEndIndices = [];
-  for (let i = 0; i < totalPoints; i += 1) {
-    const row = timeline[i];
-    if (row.code === 'A') usPoints += 1;
-    else if (row.code === 'E') myUePoints += 1;
-    else themOtherPoints += 1;
-
-    const preSum = (row.preSets?.[0] ?? 0) + (row.preSets?.[1] ?? 0);
-    const postSum = (row.postSets?.[0] ?? 0) + (row.postSets?.[1] ?? 0);
-    if (postSum > preSum && i < totalPoints - 1) {
-      completedEndIndices.push(i);
-    }
-  }
-
-  const xForBoundary = (afterIdx) => {
-    const ratio = (afterIdx + 1) / totalPoints;
-    return round1(padX + ratio * usableW);
-  };
-
-  const setDividers = completedEndIndices.map((idx, k) =>
-    Object.freeze({
-      afterPointNumber: idx + 1,
-      setCompleted: k + 1,
-      x: xForBoundary(idx),
-    })
-  );
-
-  const segmentBounds = [0, ...completedEndIndices.map((idx) => idx + 1), totalPoints];
-  const setLabels = [];
-  for (let s = 0; s < segmentBounds.length - 1; s += 1) {
-    const start = segmentBounds[s];
-    const end = segmentBounds[s + 1];
-    if (end <= start) continue;
-    const midRatio = ((start + end) / 2) / totalPoints;
-    setLabels.push(
+  if (status === 'ACTIVE') {
+    cols.push(
       Object.freeze({
-        label: `S${s + 1}`,
-        x: round1(padX + midRatio * usableW),
+        label: `S${cols.length + 1}`,
+        us: Number(games[0]) || 0,
+        them: Number(games[1]) || 0,
+        usSup: null,
+        themSup: null,
+        tbUs: null,
+        tbThem: null,
+        isCurrent: true,
+      })
+    );
+    showPoints = true;
+  } else if (status === 'FINISHED_MANUAL') {
+    const hasPartialPoints = points[0] > 0 || points[1] > 0 || inTieBreak;
+    const hasPartialSet = games[0] > 0 || games[1] > 0 || hasPartialPoints;
+    if (hasPartialSet) {
+      cols.push(
+        Object.freeze({
+          label: `S${cols.length + 1}`,
+          us: Number(games[0]) || 0,
+          them: Number(games[1]) || 0,
+          usSup: null,
+          themSup: null,
+          tbUs: null,
+          tbThem: null,
+          isCurrent: true,
+        })
+      );
+      showPoints = hasPartialPoints;
+    } else if (cols.length === 0) {
+      cols.push(
+        Object.freeze({
+          label: 'S1',
+          us: 0,
+          them: 0,
+          usSup: null,
+          themSup: null,
+          tbUs: null,
+          tbThem: null,
+          isCurrent: true,
+        })
+      );
+    }
+  } else if (cols.length === 0) {
+    cols.push(
+      Object.freeze({
+        label: 'S1',
+        us: 0,
+        them: 0,
+        usSup: null,
+        themSup: null,
+        tbUs: null,
+        tbThem: null,
+        isCurrent: false,
       })
     );
   }
 
-  if (totalPoints <= TAPE_MAX_INDIVIDUAL_POINTS) {
-    const step = usableW / totalPoints;
-    const barW = round1(Math.max(2, Math.min(8, step * 0.62)));
-    const marks = timeline.map((row, idx) => {
-      const cx = totalPoints === 1 ? round1(TAPE_VIEWBOX_WIDTH / 2) : round1(padX + (idx + 0.5) * step);
-      return Object.freeze({
-        kind: row.code,
-        pointNumber: row.pointNumber,
-        cx,
-        x: round1(cx - barW / 2),
-        w: barW,
-        midY,
-        h: row.code === 'E' ? 21 : row.code === 'A' ? 16 : 13,
-        ueCount: row.code === 'E' ? 1 : 0,
-      });
-    });
-
-    return Object.freeze({
-      isEmpty: false,
-      aggregated: false,
-      totalPoints,
-      usPoints,
-      themOtherPoints,
-      myUePoints,
-      setDividers: Object.freeze(setDividers),
-      setLabels: Object.freeze(setLabels),
-      marks: Object.freeze(marks),
-    });
-  }
-
-  const binCount = TAPE_BIN_COUNT;
-  const bins = Array.from({ length: binCount }, () => ({
-    usCount: 0,
-    themOtherCount: 0,
-    ueCount: 0,
-  }));
-
-  for (let i = 0; i < totalPoints; i += 1) {
-    const b = Math.min(binCount - 1, Math.floor((i * binCount) / totalPoints));
-    const code = timeline[i].code;
-    if (code === 'A') bins[b].usCount += 1;
-    else if (code === 'E') bins[b].ueCount += 1;
-    else bins[b].themOtherCount += 1;
-  }
-
-  let maxSide = 1;
-  for (const bin of bins) {
-    const down = bin.themOtherCount + bin.ueCount;
-    if (bin.usCount > maxSide) maxSide = bin.usCount;
-    if (down > maxSide) maxSide = down;
-  }
-
-  const binStep = usableW / binCount;
-  const barW = round1(Math.max(2.5, binStep * 0.72));
-  const marks = bins.map((bin, b) => {
-    const cx = round1(padX + (b + 0.5) * binStep);
-    const usH = bin.usCount > 0 ? round1(Math.max(3, (bin.usCount / maxSide) * maxBarH)) : 0;
-    const themH = bin.themOtherCount > 0 ? round1(Math.max(3, (bin.themOtherCount / maxSide) * maxBarH)) : 0;
-    const ueH = bin.ueCount > 0 ? round1(Math.max(5, (bin.ueCount / maxSide) * maxBarH)) : 0;
-    return Object.freeze({
-      kind: 'BIN',
-      binIndex: b,
-      cx,
-      x: round1(cx - barW / 2),
-      w: barW,
-      midY,
-      usCount: bin.usCount,
-      themOtherCount: bin.themOtherCount,
-      ueCount: bin.ueCount,
-      usH,
-      themH,
-      ueH,
-    });
-  });
+  const activeServer =
+    status === 'ACTIVE' && (state?.server === 0 || state?.server === 1) ? state.server : null;
 
   return Object.freeze({
-    isEmpty: false,
-    aggregated: true,
-    totalPoints,
-    usPoints,
-    themOtherPoints,
-    myUePoints,
-    setDividers: Object.freeze(setDividers),
-    setLabels: Object.freeze(setLabels),
-    marks: Object.freeze(marks),
+    cols: Object.freeze(cols),
+    showPoints,
+    pointsHeader,
+    points: Object.freeze([String(pointsLabel[0] ?? '0'), String(pointsLabel[1] ?? '0')]),
+    activeServer,
   });
 }
 
 /**
- * Renders the Match Rally Tape as a self-contained accessible inline SVG string.
- * Uses distinct coral diamond-capped spikes for MY UE so coral never carries meaning by color alone.
+ * Pure Set Flow + Broadcast Point-by-Point model derived from analyzeMatch() output.
+ * - Reads final set scores & tieBreakPoints directly from summary.setHistory (zero display-text parsing).
+ * - Uses timeline strictly to group points into games, count UEs (unbounded integer), and render point labels.
+ * - Labels Advantage deuce resets as 'D', Golden Point deciders as 'GP', and tie-breaks as plain numbers with server: null.
+ * - Never emits empty incomplete games when stopped at an exact game or set boundary.
  */
-export function renderMatchTapeSvg(analytics) {
-  const data = buildMatchTapeData(analytics);
-  if (data.isEmpty) {
-    return '<div class="tape-empty">No points recorded.</div>';
+export function buildSetFlowModel(analytics) {
+  const timeline = Array.isArray(analytics?.timeline) ? analytics.timeline : [];
+  const summary = analytics?.summary ?? null;
+  if (timeline.length === 0 || !summary) {
+    return Object.freeze({ isEmpty: true, sets: Object.freeze([]) });
   }
 
-  const midY = 38;
+  const setHistory = Array.isArray(summary.setHistory) ? summary.setHistory : [];
+  const setBuckets = new Map();
+
+  for (const row of timeline) {
+    const setNum = Number(row.preSetNumber) || 1;
+    let bucket = setBuckets.get(setNum);
+    if (!bucket) {
+      bucket = [];
+      setBuckets.set(setNum, bucket);
+    }
+    bucket.push(row);
+  }
+
+  const sortedSetNums = [...setBuckets.keys()].sort((a, b) => a - b);
+  const sets = [];
+
+  for (const setNum of sortedSetNums) {
+    const rows = setBuckets.get(setNum);
+    const setIdx = setNum - 1;
+    const completedSet = setIdx < setHistory.length ? setHistory[setIdx] : null;
+
+    const games = [];
+    let currentGameRows = [];
+
+    const flushGame = (gameRows, gameEnded, setEndedOnGame) => {
+      if (gameRows.length === 0) return;
+      const firstRow = gameRows[0];
+      const lastRow = gameRows[gameRows.length - 1];
+      const isTieBreak = Boolean(firstRow.inTieBreak);
+      const isIncomplete = !gameEnded;
+      const winner = gameEnded ? (lastRow.code === 'A' ? 0 : 1) : null;
+      const server = isTieBreak ? null : firstRow.preServer === 0 ? 0 : firstRow.preServer === 1 ? 1 : null;
+      const isBreak = Boolean(!isTieBreak && !isIncomplete && winner !== null && server !== null && winner !== server);
+
+      let usGamesAfter = lastRow.postGames[0];
+      let themGamesAfter = lastRow.postGames[1];
+      if (setEndedOnGame && completedSet) {
+        usGamesAfter = completedSet.games[0];
+        themGamesAfter = completedSet.games[1];
+      }
+
+      let tbScoreText = null;
+      if (isTieBreak) {
+        if (setEndedOnGame && Array.isArray(completedSet?.tieBreakPoints)) {
+          tbScoreText = `${completedSet.tieBreakPoints[0]}–${completedSet.tieBreakPoints[1]}`;
+        } else if (isIncomplete) {
+          tbScoreText = `${summary.points[0]}–${summary.points[1]}`;
+        } else {
+          tbScoreText = `${lastRow.postPointsLabel[0]}–${lastRow.postPointsLabel[1]}`;
+        }
+      }
+
+      let ueCount = 0;
+      const points = gameRows.map((r, pIdx) => {
+        if (r.code === 'E') ueCount += 1;
+        const isLastPointOfGame = pIdx === gameRows.length - 1;
+        const endedHere = isLastPointOfGame && gameEnded;
+
+        let usLabel = r.postPointsLabel[0];
+        let themLabel = r.postPointsLabel[1];
+
+        if (isTieBreak) {
+          if (endedHere && setEndedOnGame && Array.isArray(completedSet?.tieBreakPoints)) {
+            usLabel = String(completedSet.tieBreakPoints[0]);
+            themLabel = String(completedSet.tieBreakPoints[1]);
+          }
+        } else if (endedHere) {
+          const isGp = Array.isArray(r.clutchLabels) && r.clutchLabels.includes('goldenPoint');
+          const winMark = isGp ? 'GP' : 'G';
+          usLabel = r.code === 'A' ? winMark : '·';
+          themLabel = r.code === 'A' ? '·' : winMark;
+        } else {
+          const wasAd = r.prePointsLabel[0] === 'AD' || r.prePointsLabel[1] === 'AD';
+          const isDeuceReset = wasAd && r.postPointsLabel[0] === '40' && r.postPointsLabel[1] === '40';
+          if (isDeuceReset) {
+            usLabel = r.code === 'A' ? 'D' : '40';
+            themLabel = r.code === 'A' ? '40' : 'D';
+          }
+        }
+
+        return Object.freeze({
+          pointNumber: r.pointNumber,
+          code: r.code,
+          usLabel,
+          themLabel,
+          isGameWin: endedHere,
+        });
+      });
+
+      const gameIndex = games.length;
+      games.push(
+        Object.freeze({
+          index: gameIndex,
+          label: isTieBreak ? 'TB' : String(gameIndex + 1),
+          isTieBreak,
+          isIncomplete,
+          server,
+          winner,
+          isBreak,
+          usGamesAfter,
+          themGamesAfter,
+          tbScoreText,
+          ueCount,
+          points: Object.freeze(points),
+        })
+      );
+    };
+
+    for (const r of rows) {
+      currentGameRows.push(r);
+      const preSetsSum = (r.preSets?.[0] ?? 0) + (r.preSets?.[1] ?? 0);
+      const postSetsSum = (r.postSets?.[0] ?? 0) + (r.postSets?.[1] ?? 0);
+      const preGamesSum = (r.preGames?.[0] ?? 0) + (r.preGames?.[1] ?? 0);
+      const postGamesSum = (r.postGames?.[0] ?? 0) + (r.postGames?.[1] ?? 0);
+
+      const setEndedHere = postSetsSum > preSetsSum;
+      const gameEndedHere = setEndedHere || postGamesSum > preGamesSum;
+
+      if (gameEndedHere) {
+        flushGame(currentGameRows, true, setEndedHere);
+        currentGameRows = [];
+      }
+    }
+
+    if (currentGameRows.length > 0) {
+      flushGame(currentGameRows, false, false);
+    }
+
+    // Default selected game: highest UE count (tie-break: latest game; all 0 -> last game)
+    let defaultGameIndex = Math.max(0, games.length - 1);
+    let maxUe = 0;
+    for (let i = 0; i < games.length; i += 1) {
+      if (games[i].ueCount > 0 && games[i].ueCount >= maxUe) {
+        maxUe = games[i].ueCount;
+        defaultGameIndex = i;
+      }
+    }
+
+    const finalUs = completedSet ? completedSet.games[0] : summary.games[0];
+    const finalThem = completedSet ? completedSet.games[1] : summary.games[1];
+
+    sets.push(
+      Object.freeze({
+        setNumber: setNum,
+        scoreText: `${finalUs}–${finalThem}`,
+        isIncomplete: !completedSet,
+        defaultGameIndex,
+        games: Object.freeze(games),
+      })
+    );
+  }
+
+  return Object.freeze({
+    isEmpty: sets.length === 0,
+    sets: Object.freeze(sets),
+  });
+}
+
+/**
+ * Deterministic 1-line match takeaway combining error spikes/clusters and service hold or serve/return skew.
+ */
+export function buildMatchTakeaway(analytics, setFlow = null) {
+  const counts = analytics?.summary?.counts;
+  if (!counts || counts.totalPoints === 0) {
+    return 'No points recorded yet.';
+  }
+  const pointsLost = (counts.themOtherPoints || 0) + (counts.myUePoints || 0);
+  if (pointsLost === 0) {
+    return 'Flawless — zero points lost.';
+  }
+  if ((counts.myUePoints || 0) === 0) {
+    return 'Zero unforced errors recorded.';
+  }
+
+  const flow = setFlow ?? buildSetFlowModel(analytics);
   const parts = [];
 
-  parts.push(
-    `<rect x="0" y="0" width="${TAPE_VIEWBOX_WIDTH}" height="${TAPE_VIEWBOX_HEIGHT}" fill="#081B38"/>`
-  );
-  parts.push(
-    `<line x1="8" y1="${midY}" x2="${TAPE_VIEWBOX_WIDTH - 8}" y2="${midY}" stroke="rgba(244,247,251,0.45)" stroke-width="1.2"/>`
-  );
-
-  for (const d of data.setDividers) {
-    parts.push(
-      `<line x1="${d.x}" y1="14" x2="${d.x}" y2="${TAPE_VIEWBOX_HEIGHT - 8}" stroke="rgba(244,247,251,0.5)" stroke-width="1" stroke-dasharray="3 2"/>`
-    );
-  }
-  for (const lbl of data.setLabels) {
-    parts.push(
-      `<text x="${lbl.x}" y="11" text-anchor="middle" fill="#9BB5D6" font-size="9" font-family="ui-monospace,monospace" font-weight="700">${escapeAttr(lbl.label)}</text>`
-    );
-  }
-
-  if (!data.aggregated) {
-    for (const m of data.marks) {
-      if (m.kind === 'A') {
-        const y = round1(midY - m.h);
-        parts.push(`<rect x="${m.x}" y="${y}" width="${m.w}" height="${m.h}" fill="#F4F7FB"/>`);
-      } else if (m.kind === 'B') {
-        parts.push(`<rect x="${m.x}" y="${midY + 1}" width="${m.w}" height="${m.h}" fill="#4A74B0"/>`);
-      } else {
-        const tipY = round1(midY + m.h + 4);
-        parts.push(
-          `<rect x="${m.x}" y="${midY + 1}" width="${m.w}" height="${m.h}" fill="#FF5C4D"/>`
-        );
-        parts.push(
-          `<polygon points="${m.cx},${tipY + 3.5} ${round1(m.cx + 3.2)},${tipY} ${m.cx},${tipY - 3.5} ${round1(m.cx - 3.2)},${tipY}" fill="#FF5C4D"/>`
-        );
+  // Fact 1: Heavy single error game (>=3 UEs) or cluster count
+  let worstGame = null;
+  for (const s of flow.sets) {
+    for (const g of s.games) {
+      if (g.ueCount >= 3 && (!worstGame || g.ueCount > worstGame.ueCount)) {
+        worstGame = { setNumber: s.setNumber, label: g.label, ueCount: g.ueCount, isTieBreak: g.isTieBreak };
       }
     }
+  }
+  const clusterCount = analytics?.clusters?.length ?? 0;
+  if (worstGame) {
+    const gameRef = worstGame.isTieBreak ? `S${worstGame.setNumber} TB` : `S${worstGame.setNumber} G${worstGame.label}`;
+    parts.push(`Heavy error game in ${gameRef} (${worstGame.ueCount} UEs)`);
+  } else if (clusterCount > 0) {
+    parts.push(`${clusterCount} error ${clusterCount === 1 ? 'streak' : 'streaks'}`);
+  }
+
+  // Fact 2: Ordinary service hold or serve/return UE skew
+  const hold = analytics?.serviceHold;
+  if (hold && hold.completedOrdinaryServiceGames > 0) {
+    parts.push(`Held ${hold.ordinaryServiceGamesWon} of ${hold.completedOrdinaryServiceGames} serves`);
   } else {
-    for (const m of data.marks) {
-      if (m.usH > 0) {
-        parts.push(
-          `<rect x="${m.x}" y="${round1(midY - m.usH)}" width="${m.w}" height="${m.usH}" fill="#F4F7FB"/>`
-        );
-      }
-      if (m.themH > 0) {
-        parts.push(
-          `<rect x="${m.x}" y="${midY + 1}" width="${m.w}" height="${m.themH}" fill="#4A74B0"/>`
-        );
-      }
-      if (m.ueH > 0) {
-        const ueStartY = round1(midY + 1 + m.themH);
-        const clampedH = round1(Math.min(m.ueH, TAPE_VIEWBOX_HEIGHT - 12 - ueStartY));
-        const finalH = Math.max(3, clampedH);
-        const tipY = round1(ueStartY + finalH + 3);
-        parts.push(
-          `<rect x="${m.x}" y="${ueStartY}" width="${m.w}" height="${finalH}" fill="#FF5C4D"/>`
-        );
-        parts.push(
-          `<polygon points="${m.cx},${tipY + 3} ${round1(m.cx + 2.6)},${tipY} ${m.cx},${tipY - 3} ${round1(m.cx - 2.6)},${tipY}" fill="#FF5C4D"/>`
-        );
-      }
-    }
+    const srv = analytics?.serveReturn?.serving?.myUePoints ?? 0;
+    const ret = analytics?.serveReturn?.returning?.myUePoints ?? 0;
+    if (ret > srv) parts.push(`${ret} of ${counts.myUePoints} UEs while returning`);
+    else if (srv > ret) parts.push(`${srv} of ${counts.myUePoints} UEs while serving`);
   }
 
-  const ariaLabel = `Rally timeline: ${data.usPoints} US points, ${data.themOtherPoints} other THEM points, ${data.myUePoints} My unforced errors across ${data.totalPoints} total points${data.aggregated ? ' (grouped by match progression)' : ''}.`;
+  if (parts.length === 0) {
+    return `${counts.myUePoints} My UEs across ${counts.totalPoints} rallies played.`;
+  }
+  return `${parts.join(' · ')}.`;
+}
 
-  return `<svg class="match-tape-svg" viewBox="0 0 ${TAPE_VIEWBOX_WIDTH} ${TAPE_VIEWBOX_HEIGHT}" role="img" aria-label="${escapeAttr(ariaLabel)}" preserveAspectRatio="none">${parts.join('')}</svg>`;
+/**
+ * DST-safe local human match date formatter computed at render time (never cached across midnight).
+ * Uses local calendar day comparison via Date(y, m, d - 1) so daylight-saving shifts never misclassify Yesterday.
+ */
+export function formatLocalMatchDate(timestampMs, nowMs = Date.now()) {
+  if (typeof timestampMs !== 'number' || !Number.isFinite(timestampMs)) {
+    return 'Undated';
+  }
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) {
+    return 'Undated';
+  }
+  const now = new Date(Number.isFinite(nowMs) ? nowMs : Date.now());
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const timeStr = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+  const dY = d.getFullYear();
+  const dM = d.getMonth();
+  const dD = d.getDate();
+
+  const nY = now.getFullYear();
+  const nM = now.getMonth();
+  const nD = now.getDate();
+
+  if (dY === nY && dM === nM && dD === nD) {
+    return `Today ${timeStr}`;
+  }
+
+  const yesterday = new Date(nY, nM, nD - 1);
+  if (dY === yesterday.getFullYear() && dM === yesterday.getMonth() && dD === yesterday.getDate()) {
+    return `Yesterday ${timeStr}`;
+  }
+
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthName = MONTHS[dM] ?? String(dM + 1);
+  if (dY === nY) {
+    return `${monthName} ${dD} ${timeStr}`;
+  }
+  return `${monthName} ${dD}, ${dY} ${timeStr}`;
 }

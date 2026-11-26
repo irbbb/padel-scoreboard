@@ -17,13 +17,16 @@ await esbuild.build({
 
 fs.copyFileSync(path.resolve('src/app/styles.css'), path.join(outDir, 'styles.css'));
 
+// Maskable-safe icon: inner card & all glyphs sit strictly inside central 80% safe circle (r=204.8px; 144*sqrt(2)=203.6px)
 const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#081b38"/>
-  <rect x="44" y="44" width="424" height="424" rx="56" fill="#0d2c5c" stroke="#f4f7fb" stroke-width="14"/>
-  <line x1="256" y1="44" x2="256" y2="468" stroke="#f4f7fb" stroke-width="14"/>
-  <circle cx="152" cy="176" r="56" fill="#e2ff3d"/>
-  <text x="152" y="380" text-anchor="middle" font-family="system-ui,sans-serif" font-size="108" font-weight="900" fill="#f4f7fb">40</text>
-  <text x="360" y="380" text-anchor="middle" font-family="system-ui,sans-serif" font-size="108" font-weight="900" fill="#aec5e3">15</text>
+  <rect width="512" height="512" fill="#111318"/>
+  <rect x="112" y="112" width="288" height="288" rx="44" fill="#191c22" stroke="#2d323c" stroke-width="10"/>
+  <rect x="142" y="158" width="24" height="24" rx="6" fill="#4cc39a"/>
+  <circle cx="192" cy="170" r="12" fill="#d9ea4e"/>
+  <text x="368" y="192" text-anchor="end" font-family="system-ui,sans-serif" font-size="76" font-weight="900" fill="#f2f4f7">40</text>
+  <line x1="142" y1="256" x2="370" y2="256" stroke="#2d323c" stroke-width="7"/>
+  <rect x="142" y="318" width="24" height="24" rx="6" fill="#6ba4e8"/>
+  <text x="368" y="352" text-anchor="end" font-family="system-ui,sans-serif" font-size="76" font-weight="900" fill="#9aa3b2">15</text>
 </svg>
 `;
 fs.writeFileSync(path.join(outDir, 'icon.svg'), iconSvg, 'utf8');
@@ -36,14 +39,20 @@ const manifestJson = JSON.stringify(
     start_url: './',
     scope: './',
     display: 'standalone',
-    background_color: '#081b38',
-    theme_color: '#081b38',
+    background_color: '#111318',
+    theme_color: '#111318',
     icons: [
       {
         src: './icon.svg',
         sizes: 'any',
         type: 'image/svg+xml',
-        purpose: 'any maskable',
+        purpose: 'any',
+      },
+      {
+        src: './icon.svg',
+        sizes: 'any',
+        type: 'image/svg+xml',
+        purpose: 'maskable',
       },
     ],
   },
@@ -57,7 +66,7 @@ const html = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#081b38">
+  <meta name="theme-color" content="#111318">
   <title>PadelScore — Band 9 Active PWA</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">

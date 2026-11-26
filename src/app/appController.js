@@ -197,14 +197,20 @@ export function createAppController({
     let cached = historySummaryCache.get(matchRecord);
     if (!cached) {
       const st = deriveMatchState(matchRecord, matchRecord.finishTimeMs ?? matchRecord.startTimeMs);
+      const hasPartial =
+        st.status === 'FINISHED_MANUAL' &&
+        (st.games[0] > 0 || st.games[1] > 0 || st.points[0] > 0 || st.points[1] > 0 || st.inTieBreak);
       cached = Object.freeze({
         matchId: matchRecord.matchId,
         status: matchRecord.status,
         winner: st.winner,
         scoringMode: st.scoringMode,
+        timestampMs: matchRecord.finishTimeMs ?? matchRecord.startTimeMs,
         dateText: formatMatchDateText(matchRecord.finishTimeMs ?? matchRecord.startTimeMs),
         setsText: `${st.sets[0]}-${st.sets[1]}`,
+        setHistory: Object.freeze(st.setHistory),
         setLines: Object.freeze(st.setHistory.map(formatSetLine)),
+        partialGames: hasPartial ? Object.freeze([st.games[0], st.games[1]]) : null,
         durationText: formatDuration(st.durationSec),
         myUePoints: st.counts.myUePoints,
         uePctText: formatUePercent(st.myUePctOfPointsLost),
@@ -711,6 +717,9 @@ export function createAppController({
         inspectedDateText: inspectedRecord
           ? formatMatchDateText(inspectedRecord.finishTimeMs ?? inspectedRecord.startTimeMs)
           : '',
+        inspectedTimestampMs: inspectedRecord
+          ? (inspectedRecord.finishTimeMs ?? inspectedRecord.startTimeMs)
+          : null,
         inspectedCanDelete: Boolean(
           isWriter && inspectedRecord && inspectedRecord.matchId !== activeMatchId
         ),

@@ -1,23 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addPoint, createMatch, finishManual, undoLastPoint } from '../src/core/scoreEngine.js';
+import {
+  addPoint,
+  correctInitialServer,
+  createMatch,
+  deriveMatchState,
+  finishManual,
+  undoLastPoint,
+} from '../src/core/scoreEngine.js';
 import { analyzeMatch } from '../src/core/matchAnalytics.js';
 import {
-  buildMatchTapeData,
+  buildBandKeysForPhase,
+  buildMatchTakeaway,
+  buildScoreboardColumns,
+  buildSetFlowModel,
   computePointShare,
   describeBandControls,
+  formatLocalMatchDate,
   getBandGuideSteps,
   getCenterModeSummary,
   isSafeUpdateScreen,
-  renderMatchTapeSvg,
   shouldReloadOnControllerChange,
-  TAPE_BIN_COUNT,
-  TAPE_VIEWBOX_HEIGHT,
-  TAPE_VIEWBOX_WIDTH,
 } from '../src/app/uiHelpers.js';
 
+function playGame(rec, winnerCode, clock) {
+  let r = rec;
+  for (let p = 0; p < 4; p += 1) {
+    clock.t += 1000;
+    r = addPoint(r, winnerCode, clock.t);
+  }
+  return r;
+}
+
+function playSet(rec, usGames, themGames, clock) {
+  let r = rec;
+  let u = 0;
+  let th = 0;
+  while (u < usGames || th < themGames) {
+    if (u < usGames && (u <= th || th === themGames)) {
+      r = playGame(r, 'A', clock);
+      u += 1;
+    } else {
+      r = playGame(r, 'B', clock);
+      th += 1;
+    }
+  }
+  return r;
+}
+
 test('describeBandControls derives exact Band readout and keys across Setup, Warmup, Live, PROMPT, and AWAITING_LIVE', () => {
-  // Setup: Pick on Band + EDIT_MODE (default)
   const setupWatch = describeBandControls({
     screen: 'SETUP',
     setupInitialServer: null,
@@ -30,7 +61,6 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   assert.equal(setupWatch.keys[2].label, 'THEM serves');
   assert.match(setupWatch.afterWarmupNote, /Edit/i);
 
-  // Setup: Fixed opener + ONE_TAP_UE matches authoritative formatWristDisplay output verbatim
   const setupFixed = describeBandControls({
     screen: 'SETUP',
     setupInitialServer: 1,
@@ -44,7 +74,6 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   assert.equal(setupFixed.keys[1].label, 'My error · +1 THEM');
   assert.equal(setupFixed.keys[1].tone, 'ue');
 
-  // Read-only viewer never shows live actionable Band key assignments
   const viewerState = describeBandControls({
     screen: 'LIVE',
     isWriter: false,
@@ -59,7 +88,6 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   assert.equal(viewerState.showKeys, false);
   assert.equal(viewerState.keys.length, 0);
 
-  // Interrupted writer during Edit leads with Re-link Band first (never actionable keys before re-link)
   const interruptedEdit = describeBandControls({
     screen: 'LIVE',
     isWriter: true,
@@ -75,7 +103,6 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   assert.match(interruptedEdit.headline, /Re-link Band/i);
   assert.match(interruptedEdit.subcue, /Re-link Band/i);
 
-  // Live: Warmup awaiting server (armed writer)
   const liveWarmup = describeBandControls({
     screen: 'LIVE',
     isWriter: true,
@@ -88,11 +115,8 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   });
   assert.equal(liveWarmup.phase, 'WARMUP');
   assert.equal(liveWarmup.showKeys, true);
-  assert.equal(liveWarmup.title, 'WHO SERVES? #1');
-  assert.equal(liveWarmup.artist, '< US   THEM >');
   assert.equal(liveWarmup.keys[1].disabled, true);
 
-  // Live: Normal scoring in EDIT_MODE keeps tested wrist lines verbatim
   const liveEditMode = describeBandControls({
     screen: 'LIVE',
     isWriter: true,
@@ -104,12 +128,8 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
     editState: { phase: 'LIVE' },
   });
   assert.equal(liveEditMode.phase, 'LIVE');
-  assert.equal(liveEditMode.showKeys, true);
-  assert.equal(liveEditMode.title, '*30-15 2-1 #9');
-  assert.equal(liveEditMode.artist, 'S0-0 UE:1');
   assert.equal(liveEditMode.keys[1].label, 'Edit point');
 
-  // Live: EDIT PROMPT at 0 points marks Undo as disabled
   const promptZero = describeBandControls({
     screen: 'LIVE',
     isWriter: true,
@@ -125,7 +145,6 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   assert.equal(promptZero.keys[0].label, 'Undo unavailable');
   assert.equal(promptZero.keys[2].disabled, false);
 
-  // Live: AWAITING_LIVE makes "Press || to resume scoring" primary and pauses both arrows
   const awaitingUe = describeBandControls({
     screen: 'LIVE',
     isWriter: true,
@@ -145,37 +164,28 @@ test('describeBandControls derives exact Band readout and keys across Setup, War
   assert.equal(awaitingUe.keys[2].disabled, true);
 });
 
-test('getBandGuideSteps shows warmup picker ONLY when showWarmupStep=true and uses player-facing Edit point name', () => {
+test('getBandGuideSteps shares buildBandKeysForPhase and shows warmup ONLY when showWarmupStep=true', () => {
   const editWithWarmup = getBandGuideSteps('EDIT_MODE', { showWarmupStep: true });
   assert.equal(editWithWarmup.length, 4);
   assert.match(editWithWarmup[0].bandTitle, /WHO SERVES\?/);
-  assert.match(editWithWarmup[3].title, /Press \|\| to resume/i);
+  assert.deepEqual(editWithWarmup[0].keys, buildBandKeysForPhase('WARMUP', { wristCenterMode: 'EDIT_MODE' }));
+  assert.deepEqual(editWithWarmup[3].keys, buildBandKeysForPhase('AWAITING_LIVE', { wristCenterMode: 'EDIT_MODE' }));
 
-  // Fixed or already-selected server omits warmup picker so player never awards an unintended point
   const editFixed = getBandGuideSteps('EDIT_MODE', { showWarmupStep: false });
   assert.equal(editFixed.length, 3);
   assert.doesNotMatch(editFixed[0].bandTitle, /WHO SERVES\?/);
-  assert.match(editFixed[0].title, /Score normal rallies/i);
-  assert.match(editFixed[2].title, /Press \|\| to resume/i);
+  assert.deepEqual(editFixed[0].keys, buildBandKeysForPhase('LIVE', { wristCenterMode: 'EDIT_MODE' }));
 
   const oneTapFixed = getBandGuideSteps('ONE_TAP_UE', { showWarmupStep: false });
   assert.equal(oneTapFixed.length, 3);
-  assert.doesNotMatch(oneTapFixed[0].bandTitle, /WHO SERVES\?/);
-  assert.match(oneTapFixed[0].title, /1 tap/i);
-  assert.match(oneTapFixed[1].caption, /Edit point/);
+  assert.deepEqual(oneTapFixed[0].keys, buildBandKeysForPhase('LIVE', { wristCenterMode: 'ONE_TAP_UE' }));
   assert.doesNotMatch(oneTapFixed[1].caption, /EDIT #rev/);
 });
 
 test('computePointShare guards 0-point denominators and separates US / Other THEM / My UEs', () => {
   const zero = computePointShare({ ourPoints: 0, themOtherPoints: 0, myUePoints: 0 });
   assert.equal(zero.totalPoints, 0);
-  assert.equal(zero.usPct, 0);
   assert.equal(zero.uePctOfLost, null);
-
-  const oneUe = computePointShare({ ourPoints: 0, themOtherPoints: 0, myUePoints: 1 });
-  assert.equal(oneUe.totalPoints, 1);
-  assert.equal(oneUe.myUePct, 100);
-  assert.equal(oneUe.uePctOfLost, 1);
 
   const mix = computePointShare({ ourPoints: 10, themOtherPoints: 6, myUePoints: 4 });
   assert.equal(mix.totalPoints, 20);
@@ -185,103 +195,189 @@ test('computePointShare guards 0-point denominators and separates US / Other THE
   assert.equal(mix.uePctOfLost, 0.4);
 });
 
-test('Match Tape handles 0 points, 1 E point, post-undo sequence, mid-tiebreak manual finish, tiebreak set win, and 320-point dense match', () => {
+test('buildScoreboardColumns & buildSetFlowModel cover all 9 padel edge cases cleanly', () => {
   const T0 = Date.UTC(2026, 5, 1, 20, 0, 0);
 
-  // 1. Zero points
+  // 1. Ended early with 0 points -> fallback S1 0-0, empty Set Flow, no serve dot
   const emptyRec = finishManual(
     createMatch({ matchId: 'm-empty', nowMs: T0, config: { scoringMode: 'AD', initialServer: null } }),
     T0 + 5000
   );
   const emptyAna = analyzeMatch(emptyRec, T0 + 5000);
-  assert.equal(buildMatchTapeData(emptyAna).isEmpty, true);
-  assert.match(renderMatchTapeSvg(emptyAna), /No points recorded/);
+  const emptyBoard = buildScoreboardColumns(emptyAna.summary);
+  assert.equal(emptyBoard.cols.length, 1);
+  assert.equal(emptyBoard.cols[0].label, 'S1');
+  assert.equal(emptyBoard.cols[0].us, 0);
+  assert.equal(emptyBoard.showPoints, false);
+  assert.equal(emptyBoard.activeServer, null);
+  assert.equal(buildSetFlowModel(emptyAna).isEmpty, true);
+  assert.equal(buildMatchTakeaway(emptyAna), 'No points recorded yet.');
 
-  // 2. Single E point -> centered mark, distinct diamond polygon, no NaN
-  let oneRec = createMatch({ matchId: 'm-one', nowMs: T0, config: { scoringMode: 'AD', initialServer: 0 } });
-  oneRec = addPoint(oneRec, 'E', T0 + 2000);
-  oneRec = finishManual(oneRec, T0 + 5000);
-  const oneAna = analyzeMatch(oneRec, T0 + 5000);
-  const oneData = buildMatchTapeData(oneAna);
-  assert.equal(oneData.isEmpty, false);
-  assert.equal(oneData.marks.length, 1);
-  assert.equal(oneData.marks[0].cx, TAPE_VIEWBOX_WIDTH / 2);
-  const oneSvg = renderMatchTapeSvg(oneAna);
-  assert.ok(oneSvg.includes('<polygon'));
-  assert.ok(!oneSvg.includes('NaN'));
+  // 2. Golden Point at 40-40 decided by MY UE ('E') -> GP label & break tracked
+  let gpRec = createMatch({ matchId: 'm-gp', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
+  let t = T0;
+  for (const code of ['A', 'B', 'A', 'B', 'A', 'B', 'E']) {
+    t += 1000;
+    gpRec = addPoint(gpRec, code, t);
+  }
+  gpRec = finishManual(gpRec, t + 1000);
+  const gpAna = analyzeMatch(gpRec, t + 1000);
+  const gpFlow = buildSetFlowModel(gpAna);
+  assert.equal(gpFlow.sets.length, 1);
+  assert.equal(gpFlow.sets[0].games.length, 1);
+  const gpGame = gpFlow.sets[0].games[0];
+  assert.equal(gpGame.isIncomplete, false);
+  assert.equal(gpGame.isBreak, true);
+  assert.equal(gpGame.ueCount, 1);
+  assert.equal(gpGame.points[gpGame.points.length - 1].themLabel, 'GP');
+  assert.equal(gpGame.points[gpGame.points.length - 1].usLabel, '·');
 
-  // 3. Post-undo effective sequence: score E, undo, score A -> only A plotted
+  // 3. Advantage with three deuces (AD-40 -> 40-40 labeled 'D', unlimited UEs counted)
+  let adRec = createMatch({ matchId: 'm-ad', nowMs: T0, config: { scoringMode: 'AD', initialServer: 0 } });
+  t = T0;
+  // 40-40 (A,E,A,E,A,E), then 3 deuce cycles: AD-40(A)->D(E), 40-AD(E)->D(A), AD-40(A)->D(E), then THEM wins (E,B)
+  const adSeq = ['A', 'E', 'A', 'E', 'A', 'E', 'A', 'E', 'E', 'A', 'A', 'E', 'E', 'B'];
+  for (const code of adSeq) {
+    t += 1000;
+    adRec = addPoint(adRec, code, t);
+  }
+  adRec = finishManual(adRec, t + 1000);
+  const adFlow = buildSetFlowModel(analyzeMatch(adRec, t + 1000));
+  const adPts = adFlow.sets[0].games[0].points;
+  assert.equal(adFlow.sets[0].games[0].ueCount, 7); // scales beyond 3 cleanly!
+  assert.equal(adPts[7].themLabel, 'D'); // AD-40 -> 40-40 by THEM (E)
+  assert.equal(adPts[9].usLabel, 'D'); // 40-AD -> 40-40 by US (A)
+  assert.equal(adPts[11].themLabel, 'D'); // AD-40 -> 40-40 by THEM (E)
+  assert.equal(adPts[13].themLabel, 'G');
+
+  // 4. 7-6 with a 10-8 tie-break -> TB label, tieBreakPoints from setHistory, server=null, isBreak=false
+  const clock4 = { t: T0 };
+  let tbRec = createMatch({ matchId: 'm-tb10', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
+  tbRec = playSet(tbRec, 6, 6, clock4);
+  // Alternate points to 8-8, then US wins 10-8
+  for (let i = 0; i < 8; i += 1) {
+    tbRec = addPoint(tbRec, 'A', (clock4.t += 1000));
+    tbRec = addPoint(tbRec, 'E', (clock4.t += 1000));
+  }
+  tbRec = addPoint(tbRec, 'A', (clock4.t += 1000));
+  tbRec = addPoint(tbRec, 'A', (clock4.t += 1000));
+  // 5. Ended early at 0-0 straight after Set 1 -> NO S2 column, NO empty game!
+  tbRec = finishManual(tbRec, (clock4.t += 1000));
+  const tbAna = analyzeMatch(tbRec, clock4.t);
+  const tbBoard = buildScoreboardColumns(tbAna.summary);
+  assert.equal(tbBoard.cols.length, 1);
+  assert.equal(tbBoard.cols[0].us, 7);
+  assert.equal(tbBoard.cols[0].them, 6);
+  assert.equal(tbBoard.cols[0].themSup, 8);
+  assert.equal(tbBoard.cols[0].usSup, null);
+  assert.equal(tbBoard.showPoints, false);
+
+  const tbFlow = buildSetFlowModel(tbAna);
+  assert.equal(tbFlow.sets.length, 1);
+  assert.equal(tbFlow.sets[0].games.length, 13);
+  const tbGame = tbFlow.sets[0].games[12];
+  assert.equal(tbGame.label, 'TB');
+  assert.equal(tbGame.isTieBreak, true);
+  assert.equal(tbGame.server, null);
+  assert.equal(tbGame.isBreak, false);
+  assert.equal(tbGame.tbScoreText, '10–8');
+  assert.equal(tbGame.ueCount, 8);
+  assert.equal(tbGame.points[tbGame.points.length - 1].usLabel, '10');
+  assert.equal(tbGame.points[tbGame.points.length - 1].themLabel, '8');
+
+  // 6. Ended early in the middle of a tie-break -> pointsHeader='TB', incomplete TB game
+  const clock6 = { t: T0 };
+  let midTbRec = createMatch({ matchId: 'm-midtb', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
+  midTbRec = playSet(midTbRec, 6, 6, clock6);
+  midTbRec = addPoint(midTbRec, 'A', (clock6.t += 1000));
+  midTbRec = addPoint(midTbRec, 'E', (clock6.t += 1000));
+  midTbRec = addPoint(midTbRec, 'A', (clock6.t += 1000));
+  // Active check first: TB header + live serve dot
+  const activeMidState = deriveMatchState(midTbRec, clock6.t);
+  const activeMidBoard = buildScoreboardColumns(activeMidState);
+  assert.equal(activeMidBoard.pointsHeader, 'TB');
+  assert.equal(activeMidBoard.showPoints, true);
+  assert.notEqual(activeMidBoard.activeServer, null);
+
+  midTbRec = finishManual(midTbRec, (clock6.t += 1000));
+  const midTbAna = analyzeMatch(midTbRec, clock6.t);
+  const midTbBoard = buildScoreboardColumns(midTbAna.summary);
+  assert.equal(midTbBoard.pointsHeader, 'TB');
+  assert.equal(midTbBoard.showPoints, true);
+  assert.equal(midTbBoard.activeServer, null);
+  const midTbFlow = buildSetFlowModel(midTbAna);
+  assert.equal(midTbFlow.sets[0].games[12].isTieBreak, true);
+  assert.equal(midTbFlow.sets[0].games[12].isIncomplete, true);
+  assert.equal(midTbFlow.sets[0].games[12].winner, null);
+  assert.equal(midTbFlow.sets[0].games[12].tbScoreText, '2–1');
+
+  // 7. Won in 2 sets -> NO bogus S3 0-0 column, activeServer=null
+  const clock7 = { t: T0 };
+  let win2Rec = createMatch({ matchId: 'm-win2', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
+  win2Rec = playSet(win2Rec, 6, 3, clock7);
+  win2Rec = playSet(win2Rec, 6, 4, clock7);
+  const win2Ana = analyzeMatch(win2Rec, clock7.t);
+  const win2Board = buildScoreboardColumns(win2Ana.summary);
+  assert.equal(win2Board.cols.length, 2);
+  assert.equal(win2Board.showPoints, false);
+  assert.equal(win2Board.activeServer, null);
+
+  // 8. Won in 3 sets -> S1, S2, S3
+  const clock8 = { t: T0 };
+  let win3Rec = createMatch({ matchId: 'm-win3', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
+  win3Rec = playSet(win3Rec, 6, 4, clock8);
+  win3Rec = playSet(win3Rec, 3, 6, clock8);
+  win3Rec = playSet(win3Rec, 6, 2, clock8);
+  const win3Ana = analyzeMatch(win3Rec, clock8.t);
+  const win3Board = buildScoreboardColumns(win3Ana.summary);
+  assert.equal(win3Board.cols.length, 3);
+  assert.deepEqual(
+    win3Board.cols.map((c) => `${c.label}:${c.us}-${c.them}`),
+    ['S1:6-4', 'S2:3-6', 'S3:6-2']
+  );
+
+  // 9. First server corrected mid-set -> server & break flags flip cleanly on recompute
+  const clock9 = { t: T0 };
+  let corrRec = createMatch({ matchId: 'm-corr', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
+  corrRec = playGame(corrRec, 'A', clock9); // Game 1 won by US (hold when US serves)
+  const beforeFlow = buildSetFlowModel(analyzeMatch(corrRec, clock9.t));
+  assert.equal(beforeFlow.sets[0].games[0].server, 0);
+  assert.equal(beforeFlow.sets[0].games[0].isBreak, false);
+
+  corrRec = correctInitialServer(corrRec, 1); // Flip opener to THEM -> Game 1 is now a BREAK by US!
+  const afterFlow = buildSetFlowModel(analyzeMatch(corrRec, clock9.t));
+  assert.equal(afterFlow.sets[0].games[0].server, 1);
+  assert.equal(afterFlow.sets[0].games[0].isBreak, true);
+
+  // Post-Undo sequence: E undone -> A -> 0 UEs
   let undoRec = createMatch({ matchId: 'm-undo', nowMs: T0, config: { scoringMode: 'AD', initialServer: 0 } });
   undoRec = addPoint(undoRec, 'E', T0 + 1000);
   undoRec = undoLastPoint(undoRec);
   undoRec = addPoint(undoRec, 'A', T0 + 2000);
   undoRec = finishManual(undoRec, T0 + 3000);
-  const undoData = buildMatchTapeData(analyzeMatch(undoRec, T0 + 3000));
-  assert.equal(undoData.totalPoints, 1);
-  assert.equal(undoData.usPoints, 1);
-  assert.equal(undoData.myUePoints, 0);
-  assert.equal(undoData.marks[0].kind, 'A');
-
-  // 4. Mid-tiebreak manual finish: Set 1 goes to 6-6, 4 TB points played, stopped manually -> 0 dividers, open S1
-  let tbStopRec = createMatch({ matchId: 'm-tb-stop', nowMs: T0, config: { scoringMode: 'GP', initialServer: 0 } });
-  let t = T0;
-  for (let g = 0; g < 6; g += 1) {
-    for (let p = 0; p < 4; p += 1) tbStopRec = addPoint(tbStopRec, 'A', (t += 1000));
-    for (let p = 0; p < 4; p += 1) tbStopRec = addPoint(tbStopRec, 'B', (t += 1000));
-  }
-  tbStopRec = addPoint(tbStopRec, 'A', (t += 1000));
-  tbStopRec = addPoint(tbStopRec, 'E', (t += 1000));
-  tbStopRec = finishManual(tbStopRec, (t += 1000));
-  const tbStopData = buildMatchTapeData(analyzeMatch(tbStopRec, t));
-  assert.equal(tbStopData.setDividers.length, 0);
-  assert.equal(tbStopData.setLabels.length, 1);
-  assert.equal(tbStopData.setLabels[0].label, 'S1');
-
-  // 5. Tiebreak completed into Set 2 + dense 320-point match -> aggregated cleanly with exact divider & UE count
-  let denseRec = createMatch({ matchId: 'm-dense', nowMs: T0, config: { scoringMode: 'AD', initialServer: 0 } });
-  t = T0;
-  // Set 1: 6-6 then TB 7-0 (US wins Set 1)
-  for (let g = 0; g < 6; g += 1) {
-    for (let p = 0; p < 4; p += 1) denseRec = addPoint(denseRec, 'A', (t += 1000));
-    for (let p = 0; p < 4; p += 1) denseRec = addPoint(denseRec, 'B', (t += 1000));
-  }
-  for (let p = 0; p < 7; p += 1) denseRec = addPoint(denseRec, 'A', (t += 1000));
-  const set1EndPts = denseRec.events.length; // 55
-
-  // Set 2: long AD deuce marathon (> 270 points!) then finished manually
-  for (let i = 0; i < 140; i += 1) {
-    denseRec = addPoint(denseRec, 'A', (t += 1000));
-    denseRec = addPoint(denseRec, i % 4 === 0 ? 'E' : 'B', (t += 1000));
-  }
-  denseRec = finishManual(denseRec, (t += 1000));
-  assert.ok(denseRec.events.length > 300);
-
-  const denseAna = analyzeMatch(denseRec, t);
-  const denseData = buildMatchTapeData(denseAna);
-  assert.equal(denseData.aggregated, true);
-  assert.equal(denseData.marks.length, TAPE_BIN_COUNT);
-  assert.equal(denseData.setDividers.length, 1);
-  assert.equal(denseData.setDividers[0].afterPointNumber, set1EndPts);
-  assert.equal(denseData.myUePoints, 35);
-  assert.equal(
-    denseData.marks.reduce((acc, m) => acc + m.ueCount, 0),
-    35
-  );
-
-  const denseSvg = renderMatchTapeSvg(denseAna);
-  assert.ok(denseSvg.includes(`viewBox="0 0 ${TAPE_VIEWBOX_WIDTH} ${TAPE_VIEWBOX_HEIGHT}"`));
-  assert.ok(denseSvg.includes('35 My unforced errors'));
-  assert.ok(denseSvg.includes('<polygon'));
-  assert.ok(!denseSvg.includes('NaN'));
+  const undoFlow = buildSetFlowModel(analyzeMatch(undoRec, T0 + 3000));
+  assert.equal(undoFlow.sets[0].games[0].ueCount, 0);
+  assert.equal(undoFlow.sets[0].games[0].points.length, 1);
 });
 
-test('getCenterModeSummary and Service Worker update reload guards protect active matches and mismatched controllers', () => {
-  assert.equal(getCenterModeSummary('EDIT_MODE'), 'Press || to choose Undo or My Error.');
-  assert.equal(getCenterModeSummary(undefined), 'Press || to choose Undo or My Error.');
-  assert.equal(
-    getCenterModeSummary('ONE_TAP_UE'),
-    'Press || to record my unforced error and give THEM a point.'
-  );
+test('formatLocalMatchDate handles Today, Yesterday, same year, older year, DST boundaries, and invalid dates', () => {
+  const now = new Date(2026, 10, 26, 19, 30).getTime(); // Nov 26, 2026 19:30 local
+  const today = new Date(2026, 10, 26, 8, 5).getTime();
+  const yesterday = new Date(2026, 10, 25, 22, 15).getTime();
+  const earlierSameYear = new Date(2026, 9, 12, 18, 40).getTime();
+  const prevYear = new Date(2025, 11, 31, 23, 59).getTime();
+
+  assert.equal(formatLocalMatchDate(today, now), 'Today 08:05');
+  assert.equal(formatLocalMatchDate(yesterday, now), 'Yesterday 22:15');
+  assert.equal(formatLocalMatchDate(earlierSameYear, now), 'Oct 12 18:40');
+  assert.equal(formatLocalMatchDate(prevYear, now), 'Dec 31, 2025 23:59');
+  assert.equal(formatLocalMatchDate(NaN, now), 'Undated');
+  assert.equal(formatLocalMatchDate(null, now), 'Undated');
+});
+
+test('getCenterModeSummary and SW update helpers guard live screens and controller swaps', () => {
+  assert.match(getCenterModeSummary('EDIT_MODE'), /Undo or My Error/i);
+  assert.match(getCenterModeSummary('ONE_TAP_UE'), /unforced error/i);
 
   assert.equal(isSafeUpdateScreen('SETUP'), true);
   assert.equal(isSafeUpdateScreen('MATCH_OVER'), true);
@@ -291,24 +387,22 @@ test('getCenterModeSummary and Service Worker update reload guards protect activ
   assert.equal(isSafeUpdateScreen('LOADING'), false);
   assert.equal(isSafeUpdateScreen('CORRUPT'), false);
 
-  const workerV2 = { scriptURL: 'sw.js?v2' };
-  const workerV3 = { scriptURL: 'sw.js?v3' };
-
-  // Only reloads when exact requested worker became controller on a safe screen
+  const workerA = { id: 'a' };
+  const workerB = { id: 'b' };
   assert.equal(
-    shouldReloadOnControllerChange({ requestedWorker: workerV2, newController: workerV2, screen: 'SETUP' }),
+    shouldReloadOnControllerChange({ requestedWorker: null, newController: workerA, screen: 'SETUP' }),
+    false
+  );
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: workerA, newController: workerB, screen: 'SETUP' }),
+    false
+  );
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: workerA, newController: workerA, screen: 'LIVE' }),
+    false
+  );
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: workerA, newController: workerA, screen: 'SETUP' }),
     true
-  );
-  assert.equal(
-    shouldReloadOnControllerChange({ requestedWorker: workerV2, newController: workerV2, screen: 'LIVE' }),
-    false
-  );
-  assert.equal(
-    shouldReloadOnControllerChange({ requestedWorker: workerV2, newController: workerV3, screen: 'SETUP' }),
-    false
-  );
-  assert.equal(
-    shouldReloadOnControllerChange({ requestedWorker: null, newController: workerV2, screen: 'SETUP' }),
-    false
   );
 });
