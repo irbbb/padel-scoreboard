@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 484" width="280" height="484" role="img" aria-label="Xiaomi Smart Band 9 Active showing EDIT #65 &lt;UNDO   UE&gt;">
+  <defs>
+    <linearGradient id="be-strap-top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E222A" stop-opacity="0"/>
+      <stop offset="32%" stop-color="#1E222A" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#14171D" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="be-strap-bot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#14171D" stop-opacity="1"/>
+      <stop offset="68%" stop-color="#1E222A" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#1E222A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="be-rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#535B6B"/>
+      <stop offset="45%" stop-color="#2B303B"/>
+      <stop offset="100%" stop-color="#434A58"/>
+    </linearGradient>
+    <linearGradient id="be-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#191D24"/>
+      <stop offset="100%" stop-color="#0E1014"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Silicone Strap Top & Bottom (fade cleanly on light & dark READMEs) -->
+  <path d="M84 4 C84 4 88 58 76 74 L204 74 C192 58 196 4 196 4 Z" fill="url(#be-strap-top)"/>
+  <path d="M76 410 C88 426 84 480 84 480 L196 480 C196 480 192 426 204 410 Z" fill="url(#be-strap-bot)"/>
+
+  <!-- Subtle Layered Ambient Shadow -->
+  <rect x="16" y="64" width="248" height="362" rx="52" fill="#000000" fill-opacity="0.22"/>
+  <rect x="20" y="60" width="240" height="362" rx="49" fill="#000000" fill-opacity="0.28"/>
+
+  <!-- Xiaomi Smart Band 9 Active Matte Frame & Rim -->
+  <rect x="20" y="56" width="240" height="364" rx="48" fill="url(#be-rim)"/>
+  <rect x="23" y="59" width="234" height="358" rx="45.5" fill="url(#be-body)"/>
+
+  <!-- Inner Glass Display (172x320 aspect ratio scaled to 206x330) -->
+  <rect x="37" y="73" width="206" height="330" rx="34" fill="#090B0E" stroke="rgba(235,240,250,0.14)" stroke-width="1"/>
+
+  <!-- Top Band Status Row (Time + Workout Heart Rate cue) -->
+  <text x="60" y="102" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13" font-weight="700" fill="#9AA3B2">18:56</text>
+  <g transform="translate(174, 91)">
+    <path d="M6 10.2 L5.1 9.4 C2.1 6.7 0.2 5 0.2 2.9 C0.2 1.2 1.5 0 3.1 0 C4.1 0 5 0.5 6 1.3 C7 0.5 7.9 0 8.9 0 C10.5 0 11.8 1.2 11.8 2.9 C11.8 5 9.9 6.7 6.9 9.4 Z" fill="#F28B82"/>
+    <text x="16" y="10" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="#9AA3B2">144</text>
+  </g>
+
+  <!-- Music Controls Label -->
+  <text x="140" y="132" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10.5" font-weight="700" letter-spacing="1.2" fill="#6F7785">MUSIC</text>
+
+  <!-- Exact 2-Line PadelScore MediaMetadata Display -->
+  <rect x="49" y="146" width="182" height="84" rx="14" fill="#13161C" stroke="rgba(235,240,250,0.08)" stroke-width="1"/>
+  <text x="140" y="182" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" font-weight="900" fill="#F2F4F7">EDIT #65</text>
+  <text x="140" y="210" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#9AA3B2">&lt;UNDO   UE&gt;</text>
+
+  <!-- 3 Media Control Buttons (<  ||  >) -->
+  
+      
+      <circle cx="66" cy="282" r="22" fill="#1A4A3E" stroke="#2C6E5D" stroke-width="1.5"/>
+      <g fill="#E9FBF5" transform="translate(57, 273) scale(0.75)">
+        <path d="M5 5h3v14H5zm4.5 7L20 19V5z"/>
+      </g>
+      <text x="66" y="328" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" font-weight="700" fill="#4CC39A">Undo</text>
+    
+      
+      <circle cx="140" cy="282" r="26" fill="#111318" stroke="rgba(242,244,247,0.22)" stroke-width="1.5" stroke-dasharray="3.5 3"/>
+      <g fill="rgba(242,244,247,0.28)" transform="translate(131, 273) scale(0.75)">
+        <path d="M6 5h4.5v14H6zm7.5 0H18v14h-4.5z"/>
+      </g>
+      <text x="140" y="328" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" font-weight="700" fill="#707887">Open</text>
+    
+      
+      <circle cx="214" cy="282" r="22" fill="#A9362C" stroke="#CC4E43" stroke-width="1.5"/>
+      <g fill="#FDF7F6" transform="translate(205, 273) scale(0.75)">
+      <path d="M16 5h3v14h-3zM4 19l10.5-7L4 5z"/>
+    </g>
+      <text x="214" y="328" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" font-weight="700" fill="#F28B82">MY UE</text>
+    
+
+  <!-- Authentic Band Music Volume Bar + Swipe Dots -->
+  <g transform="translate(76, 355)" fill="#4D5563">
+    <rect x="0" y="4" width="8" height="2" rx="1"/>
+    <rect x="18" y="3" width="92" height="4" rx="2" fill="#1E222B"/>
+    <rect x="18" y="3" width="56" height="4" rx="2" fill="#4D5563"/>
+    <rect x="120" y="4" width="8" height="2" rx="1"/>
+    <rect x="123" y="1" width="2" height="8" rx="1"/>
+  </g>
+  <circle cx="134" cy="385" r="2.5" fill="#4D5563"/>
+  <circle cx="146" cy="385" r="2.5" fill="#F2F4F7"/>
+</svg>

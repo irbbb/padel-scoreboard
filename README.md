@@ -22,6 +22,15 @@ Zero-APK Padel Scoreboard, Unforced Error (`MY UE`) tracker, and timestamped mat
 | <img src="docs/screenshots/guide.png" alt="PadelScore Visual Band 9 Active Guide sheet" width="230"> | <img src="docs/screenshots/history.png" alt="PadelScore Match History list" width="230"> |
 | Pre-court checklist & color-coded `<` `\|\|` `>` Band schematics | Local history ledger with scores, duration & UE summary |
 
+### On Your Wrist — Xiaomi Smart Band 9 Active (Music Controls)
+
+Start a native Band Workout (recording Heart Rate) and swipe right to **Music Controls** — your phone stays locked in your bag:
+
+| 1. Pick First Server | 2. Score Live Rallies | 3. Open Edit (`\|\|`) | 4. Resume Live (`\|\|`) |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/screenshots/band-warmup.svg" alt="Xiaomi Smart Band 9 Active showing WHO SERVES? #1" width="175"> | <img src="docs/screenshots/band-live.svg" alt="Xiaomi Smart Band 9 Active showing *30-15 4-1 #65" width="175"> | <img src="docs/screenshots/band-edit.svg" alt="Xiaomi Smart Band 9 Active showing EDIT #65" width="175"> | <img src="docs/screenshots/band-resume.svg" alt="Xiaomi Smart Band 9 Active showing UE *30-30 #66 TAP || FOR LIVE" width="175"> |
+| `<` US or `>` THEM (no point scored) | `<` US +1 · `\|\|` Edit · `>` THEM +1 | `<` Undo last point · `>` My UE | Arrows lock against double-taps until `\|\|` |
+
 ---
 
 ## Clean-Clone Quick Start (Lean Docker — Zero Host Installs)
