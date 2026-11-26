@@ -4,9 +4,9 @@ export const WRIST_CENTER_MODES = Object.freeze({
 });
 
 export function normalizeWristCenterMode(value) {
-  return value === WRIST_CENTER_MODES.EDIT_MODE
-    ? WRIST_CENTER_MODES.EDIT_MODE
-    : WRIST_CENTER_MODES.ONE_TAP_UE;
+  return value === WRIST_CENTER_MODES.ONE_TAP_UE
+    ? WRIST_CENTER_MODES.ONE_TAP_UE
+    : WRIST_CENTER_MODES.EDIT_MODE;
 }
 
 export function createInitialEditState() {

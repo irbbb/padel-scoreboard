@@ -5,7 +5,7 @@ export const DEFAULTS_STORAGE_KEY = 'padelScore.defaults.v1';
 export const DEFAULT_MATCH_SETTINGS = Object.freeze({
   scoringMode: 'AD',
   initialServer: null,
-  wristCenterMode: WRIST_CENTER_MODES.ONE_TAP_UE,
+  wristCenterMode: WRIST_CENTER_MODES.EDIT_MODE,
 });
 
 function normalizeInitialServer(value) {
@@ -20,8 +20,8 @@ function normalizeScoringMode(value) {
 
 /**
  * Loads saved New Match defaults fault-tolerantly.
- * Never throws: missing, unreadable, or corrupt defaults fall back to AD + Pick on watch + ONE_TAP_UE.
- * Legacy defaults migrate cleanly while preserving explicit fields.
+ * Never throws: missing, unreadable, or corrupt defaults fall back to AD + Pick on watch + EDIT_MODE.
+ * Honors every valid stored value (including explicit ONE_TAP_UE) while preserving scoringMode & initialServer.
  */
 export function loadMatchDefaults(storage, storageKey = DEFAULTS_STORAGE_KEY) {
   if (!storage || typeof storage.getItem !== 'function') {

@@ -151,6 +151,7 @@ export function createAppController({
   let replacementDraft = null; // { baseMatchId, baseRevision, scoringMode, initialServer } | null
   let archiveBlockedDraft = false;
   let menuOpen = false;
+  let guideOpen = false;
   let confirmFinishOpen = false;
   let confirmClearCorruptOpen = false;
   let confirmOpenerOpen = false;
@@ -726,6 +727,7 @@ export function createAppController({
       actionError,
       ui: Object.freeze({
         menuOpen,
+        guideOpen,
         confirmFinishOpen,
         confirmClearCorruptOpen,
         confirmOpenerOpen,
@@ -1256,7 +1258,19 @@ export function createAppController({
 
   function setMenuOpen(open) {
     menuOpen = Boolean(open);
-    if (!menuOpen) {
+    if (menuOpen) {
+      guideOpen = false;
+    } else {
+      confirmFinishOpen = false;
+      confirmOpenerOpen = false;
+    }
+    emitUpdate();
+  }
+
+  function setGuideOpen(open) {
+    guideOpen = Boolean(open);
+    if (guideOpen) {
+      menuOpen = false;
       confirmFinishOpen = false;
       confirmOpenerOpen = false;
     }
@@ -1409,6 +1423,7 @@ export function createAppController({
     retryRead,
     clearCorruptRecord,
     setMenuOpen,
+    setGuideOpen,
     setConfirmFinishOpen,
     setConfirmOpenerOpen,
     setConfirmClearCorruptOpen,

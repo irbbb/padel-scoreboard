@@ -87,6 +87,16 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 - **Synchronous Commit Ownership Tracking:** Because `matchStore.commit()` invokes `onStateChange` synchronously before returning, tagging wrist-initiated `EDIT` commits (`pendingWristEditCommit`) distinguishes our own `UNDO`/`UE` transition (`AWAITING_LIVE` with `UNDO`/`UE` confirmation) from an external phone edit (`AWAITING_LIVE` with `INVALIDATED`) and ensures a failed storage write never transitions to a false `UNDO`/`UE` confirmation.
 - **Revision-Pinned Wrist Overlay:** Binding `EDIT` display overlays strictly to `editState.matchId === record.matchId && editState.baseRevision === record.revision` keeps `EDIT #42` / `<UNDO   UE>` ephemeral (zero `localStorage` writes or revision bumps on prompt open/close) while ensuring queued stale publishes never show mismatched overlays.
 
+---
+
+## 11. Phone UI & UX Redesign Spike Learnings (Floodlit Indoor Padel + Band 9 Active)
+- **Physical Testing Validated the Wrist Workflow:** Live testing on Android Chrome + Xiaomi Smart Band 9 Active confirmed that `EDIT #rev` (`Center → < UNDO / UE > → Center`) works cleanly on court and is preferred as the default `wristCenterMode` (with `1-Tap MY UE` still selectable).
+- **Rejecting the Generic Dark-Card Shell:** The v0 phone UI suffered from four concrete UX flaws: (1) developer jargon exposed in player chrome (`WRITER · LIVE`, `FINISHED_MANUAL`, `(A)/(B)/(E)`), (2) stacked banners pushing live score buttons below the fold on mobile viewports, (3) zero visual onboarding showing how `<`, `||`, `>` on Band 9 Active actually map to each game state, and (4) identical 2×2 stat cards + plain tables on Match Over that hide *when* UE clusters happened.
+- **Subject-Derived Design System (Indoor/Evening Floodlit Court):** Grounding the entire interface in deep floodlit WPT court blue (`#081B38` / `#0D2C5C`), crisp white painted court lines, floodlit-vs-shadowed half-court serve lighting, optic-yellow ball highlights (`#E2FF3D`) for active/serve/primary CTA, and coral-red (`#FF5C4D`) strictly for personal Unforced Errors (`MY UE`) and errors gives every color an unambiguous physical meaning instead of decorative SaaS polish.
+- **Self-Teaching Band Hardware Mirror & Rally Tape:** Rendering a compact 1:1 Band 9 Active capsule with live `<`, `||`, `>` button labels that update dynamically across Setup, Warmup, Live, `EDIT #rev`, and `AWAITING_LIVE` makes the entire 3-button wrist workflow understandable in 3 seconds without reading a manual. On Match Over and History Detail, a pure inline SVG **Match Rally Tape** plots every rally across the net line with coral `MY UE` spikes, cluster brackets, and set dividers — zero charting libraries, 100% offline.
+- **UI State Preservation Invariants:** Keep `[data-duration-text]` updated in place without rebuilding DOM controls on the 1-second timer, keep pure `src/core/` untouched except making `EDIT_MODE` the default in `normalizeWristCenterMode`/`DEFAULT_MATCH_SETTINGS`, and keep a pure testable view-helper module for Band button legends and Rally Tape SVG geometry so UI logic stays covered by `node --test`.
+
+
 
 
 

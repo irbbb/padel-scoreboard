@@ -7,6 +7,12 @@ import {
   formatSetLine,
   formatUePercent,
 } from './appController.js';
+import {
+  computePointShare,
+  describeBandControls,
+  getBandGuideSteps,
+  renderMatchTapeSvg,
+} from './uiHelpers.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -17,36 +23,121 @@ function escapeHtml(str) {
     .replaceAll("'", '&#39;');
 }
 
-function renderWristBanner(vm) {
-  if (!vm.isWriter || vm.screen !== 'LIVE') return '';
+function renderBandKeysHtml(keys) {
+  return `
+    <div class="band-keys">
+      ${keys
+        .map((k) => {
+          const classes = ['band-key'];
+          if (k.highlight) classes.push('band-key-highlight');
+          else if (k.tone === 'ue') classes.push('band-key-ue');
+          if (k.disabled) classes.push('band-key-disabled');
+          return `
+            <div class="${classes.join(' ')}">
+              <span class="band-key-symbol">${escapeHtml(k.symbol)}</span>
+              <span class="band-key-label">${escapeHtml(k.label)}</span>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
 
+function renderBandPanel(vm, { label = 'Band 9 Active' } = {}) {
+  const band = describeBandControls(vm);
+  const boxCls =
+    band.emphasis === 'resume'
+      ? 'band-box band-box-resume'
+      : band.emphasis === 'edit'
+        ? 'band-box band-box-edit'
+        : 'band-box';
+
+  return `
+    <div class="${boxCls}" data-testid="band-controls-panel">
+      <div class="band-header-row">
+        <span class="band-cue-title">${escapeHtml(band.headline)}</span>
+        <span class="section-label">${escapeHtml(label)}</span>
+      </div>
+      ${
+        band.showKeys
+          ? `<div class="band-screen" aria-label="Band 9 Active display lines">
+               <div class="band-screen-title">${escapeHtml(band.title || '—')}</div>
+               <div class="band-screen-artist">${escapeHtml(band.artist || '')}</div>
+             </div>
+             ${renderBandKeysHtml(band.keys)}`
+          : ''
+      }
+      <div class="muted">${escapeHtml(band.subcue)}</div>
+      ${band.afterWarmupNote ? `<div class="muted">${escapeHtml(band.afterWarmupNote)}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderReadOnlyBanner(vm) {
+  if (vm.isWriter || vm.screen === 'LOADING') return '';
+  const heading =
+    vm.lockStatus === 'BUSY'
+      ? 'Another tab is scoring this match'
+      : vm.lockStatus === 'UNAVAILABLE'
+        ? 'Viewing only — editing unavailable here'
+        : 'Viewing only';
+
+  return `
+    <div class="strip strip-warn" data-testid="readonly-banner">
+      <div class="strip-row">
+        <div>
+          <strong>${escapeHtml(heading)}</strong>
+          <div class="muted">${escapeHtml(vm.readOnlyReason)}</div>
+        </div>
+        <button class="btn btn-inline btn-primary" data-action="takeover-writer">Take over</button>
+      </div>
+      ${vm.takeoverNotice ? `<div class="muted">${escapeHtml(vm.takeoverNotice)}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderWristRecoveryBanner(vm) {
+  if (!vm.isWriter || vm.screen !== 'LIVE') return '';
   const status = vm.wrist.status;
-  let cls = 'banner banner-warn';
-  let label = 'Wrist Disarmed — tap Re-link Wrist';
-  if (status === 'ARMED') {
-    cls = 'banner banner-ok';
-    label = 'Wrist Armed (Band 9 Active ready)';
-  } else if (status === 'INTERRUPTED') {
-    cls = 'banner banner-err';
-    label = 'Wrist Interrupted — tap Re-link Wrist';
-  } else if (status === 'UNAVAILABLE') {
-    cls = 'banner';
-    label = 'Wrist MediaSession unavailable in this browser';
+  if (status === 'ARMED') return '';
+
+  if (status === 'UNAVAILABLE') {
+    return `
+      <div class="strip" data-testid="wrist-banner">
+        <strong>Band controls unavailable in this browser</strong>
+        <div class="muted">You can score directly on the phone.</div>
+      </div>
+    `;
   }
+
+  const isInterrupted = status === 'INTERRUPTED';
+  const hasPendingEdit = Boolean(vm.editState && vm.editState.phase !== 'LIVE');
+  const cls = isInterrupted ? 'strip strip-err' : 'strip strip-warn';
+  const title = isInterrupted ? 'Band controls interrupted' : 'Band controls not linked';
+  const sub = isInterrupted
+    ? hasPendingEdit
+      ? 'Audio focus was interrupted during Edit. Tap Re-link Band first — once linked, press || on your Band to resume arrow scoring.'
+      : 'Another app or call took audio focus. Tap Re-link Band to restore wrist scoring.'
+    : hasPendingEdit
+      ? 'Tap Re-link Band first. Once linked, press || on your Band to resume arrow scoring.'
+      : 'Tap Re-link Band to enable Band 9 Active Music Controls.';
 
   return `
     <div class="${cls}" data-testid="wrist-banner">
-      <div class="banner-row">
-        <strong>${escapeHtml(label)}</strong>
-        ${
-          vm.wrist.supported
-            ? `<button class="btn btn-sm btn-primary" data-action="relink-wrist">Re-link Wrist</button>`
-            : ''
-        }
+      <div class="strip-row">
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <div class="muted">${escapeHtml(sub)}</div>
+        </div>
+        <button class="btn btn-inline btn-primary" data-action="relink-wrist">Re-link Band</button>
       </div>
       ${
         vm.wrist.lastLinkError
-          ? `<div class="muted">Link error: ${escapeHtml(vm.wrist.lastLinkError)}</div>`
+          ? `<div class="strip-row">
+               <span class="muted">Link error: ${escapeHtml(vm.wrist.lastLinkError)}</span>
+               <button class="btn btn-inline" data-action="toggle-guide">Open troubleshooting</button>
+             </div>`
           : ''
       }
     </div>
@@ -54,48 +145,48 @@ function renderWristBanner(vm) {
 }
 
 function renderWristEditBanner(vm) {
-  if (!vm.isWriter || vm.screen !== 'LIVE' || !vm.editState || vm.editState.phase === 'LIVE') {
+  // Only show actionable Band edit/resume instructions when the writer is actively ARMED;
+  // during interruption/disarm, renderWristRecoveryBanner leads with Re-link Band first.
+  if (
+    !vm.isWriter ||
+    vm.screen !== 'LIVE' ||
+    vm.wrist.status !== 'ARMED' ||
+    !vm.editState ||
+    vm.editState.phase === 'LIVE'
+  ) {
     return '';
   }
   const es = vm.editState;
   if (es.phase === 'PROMPT') {
+    const canUndo = Boolean(es.canUndo && (vm.record?.events?.length ?? 0) > 0);
     return `
-      <div class="banner banner-warn" data-testid="wrist-edit-banner">
-        <div class="banner-row">
-          <strong>Wrist in EDIT #${es.baseRevision} (${es.canUndo ? '&lt;UNDO / UE&gt;' : 'NO UNDO / UE&gt;'})</strong>
-          <button class="btn btn-sm" data-action="cancel-wrist-edit">Cancel Edit</button>
-        </div>
-        <div class="muted">Phone scoring stays available. Canceling blocks wrist arrows until Center (||) is pressed on the band.</div>
-      </div>
-    `;
-  }
-  if (es.reason === 'UNDO' || es.reason === 'UE') {
-    return `
-      <div class="banner banner-ok" data-testid="wrist-edit-banner">
-        <div class="banner-row">
-          <strong>Wrist ${es.reason === 'UNDO' ? 'Undo' : 'MY UE'} saved (#${es.baseRevision}). Press Center (||) on band to resume arrows.</strong>
-          <button class="btn btn-sm" data-action="cancel-wrist-edit">Cancel</button>
+      <div class="strip strip-warn" data-testid="wrist-edit-banner">
+        <div class="strip-row">
+          <div>
+            <strong>Band in Edit #${es.baseRevision} — choose a correction</strong>
+            <div class="muted">${
+              canUndo
+                ? '< undoes last point · > logs My error (+1 THEM) · || stays open.'
+                : 'Undo is unavailable at 0 points · > logs My error (+1 THEM).'
+            }</div>
+          </div>
+          <button class="btn btn-inline" data-action="cancel-wrist-edit">Cancel Edit</button>
         </div>
       </div>
     `;
   }
-  return `
-    <div class="banner banner-warn" data-testid="wrist-edit-banner">
-      <strong>Edit canceled (#${es.baseRevision}). Press Center (||) on the band to resume wrist scoring.</strong>
-    </div>
-  `;
-}
 
-function renderReadOnlyBanner(vm) {
-  if (vm.isWriter || vm.screen === 'LOADING') return '';
+  const reasonText =
+    es.reason === 'UNDO'
+      ? `Last point undone (#${es.baseRevision}).`
+      : es.reason === 'UE'
+        ? `My error saved (+1 THEM, #${es.baseRevision}).`
+        : `Edit closed (#${es.baseRevision}).`;
+
   return `
-    <div class="banner banner-warn" data-testid="readonly-banner">
-      <div class="banner-row">
-        <strong>READ-ONLY MODE</strong>
-        <button class="btn btn-sm" data-action="takeover-writer">Take Over Writer</button>
-      </div>
-      <div>${escapeHtml(vm.readOnlyReason)}</div>
-      ${vm.takeoverNotice ? `<div class="muted">${escapeHtml(vm.takeoverNotice)}</div>` : ''}
+    <div class="strip strip-resume" data-testid="wrist-edit-banner">
+      <div class="resume-headline">Press || on Band to resume scoring</div>
+      <div class="muted">${escapeHtml(reasonText)} Both &lt; and &gt; arrows stay inactive until || is pressed.</div>
     </div>
   `;
 }
@@ -105,73 +196,107 @@ function renderErrorBanners(vm) {
   if (vm.lastSaveError) errors.push(`Save failed (previous score preserved): ${vm.lastSaveError}`);
   if (vm.lastPublishError) {
     if (vm.screen === 'LIVE') {
-      errors.push(`Wrist publish failed (score saved — tap Re-link Wrist): ${vm.lastPublishError}`);
+      errors.push(`Band display update failed (score saved — tap Re-link Band): ${vm.lastPublishError}`);
     } else {
-      errors.push(`Final score was saved, but the band display failed to update: ${vm.lastPublishError}`);
+      errors.push(`Final score saved, but the band display did not update: ${vm.lastPublishError}`);
     }
   }
   if (vm.actionError) errors.push(vm.actionError);
   if (errors.length === 0) return '';
 
   return errors
-    .map((msg) => `<div class="banner banner-err" role="alert">${escapeHtml(msg)}</div>`)
+    .map((msg) => `<div class="strip strip-err" role="alert">${escapeHtml(msg)}</div>`)
     .join('');
 }
 
 function renderSetupScreen(vm) {
-  const adSel = vm.setupScoringMode === 'AD' ? 'btn-selected' : '';
-  const gpSel = vm.setupScoringMode === 'GP' ? 'btn-selected' : '';
-  const oneTapSel = vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : '';
-  const editModeSel = vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : '';
-  const watchSel = vm.setupInitialServer === null ? 'btn-selected' : '';
-  const usSel = vm.setupInitialServer === 0 ? 'btn-selected' : '';
-  const themSel = vm.setupInitialServer === 1 ? 'btn-selected' : '';
+  const adSel = vm.setupScoringMode === 'AD' ? 'btn-selected' : 'btn-choice';
+  const gpSel = vm.setupScoringMode === 'GP' ? 'btn-selected' : 'btn-choice';
+  const editSel = vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : 'btn-choice';
+  const oneTapSel = vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : 'btn-choice';
+  const watchSel = vm.setupInitialServer === null ? 'btn-selected' : 'btn-choice';
+  const usSel = vm.setupInitialServer === 0 ? 'btn-selected' : 'btn-choice';
+  const themSel = vm.setupInitialServer === 1 ? 'btn-selected' : 'btn-choice';
   const disabled = vm.isWriter ? '' : 'disabled';
 
   return `
-    <section class="card" data-screen="SETUP">
-      <h1>${vm.isReplacementSetup ? 'New Match' : 'Start Padel Match'}</h1>
-      <div class="muted">
-        Format: <strong>Best of 3 Sets · 6-6 Tie-break (to 7 by 2)</strong>
-      </div>
+    <section class="court-panel" data-screen="SETUP">
       <div>
-        <div class="muted" style="margin-bottom:8px;"><strong>Scoring at 40-40</strong></div>
+        <h1>${vm.isReplacementSetup ? 'New Match' : 'Court Setup'}</h1>
+        <div class="muted">Best of 3 Sets · Tie-break at 6-6 (to 7 by 2)</div>
+      </div>
+
+      <div class="flow-steps" aria-label="How to start">
+        <div class="flow-step">
+          <span class="flow-step-num">01</span>
+          <span>Start match below</span>
+        </div>
+        <div class="flow-step">
+          <span class="flow-step-num">02</span>
+          <span>Check PadelScore in Band Music</span>
+        </div>
+        <div class="flow-step">
+          <span class="flow-step-num">03</span>
+          <span>Lock phone &amp; play</span>
+        </div>
+      </div>
+
+      ${renderBandPanel(vm, { label: 'Band preview' })}
+
+      <div class="setup-group">
+        <span class="section-label">Deuce rule (40-40)</span>
         <div class="controls-row">
-          <button class="btn ${adSel}" data-action="set-scoring-mode" data-mode="AD" ${disabled}>Advantage (AD)</button>
-          <button class="btn ${gpSel}" data-action="set-scoring-mode" data-mode="GP" ${disabled}>Golden Point (GP)</button>
+          <button class="btn ${adSel}" data-action="set-scoring-mode" data-mode="AD" aria-pressed="${vm.setupScoringMode === 'AD'}" ${disabled}>
+            <span>Advantage (AD)</span>
+            <span class="btn-sub">Win by 2 points</span>
+          </button>
+          <button class="btn ${gpSel}" data-action="set-scoring-mode" data-mode="GP" aria-pressed="${vm.setupScoringMode === 'GP'}" ${disabled}>
+            <span>Golden Point (GP)</span>
+            <span class="btn-sub">Next point wins game</span>
+          </button>
         </div>
       </div>
-      <div>
-        <div class="muted" style="margin-bottom:8px;"><strong>Wrist center button (||)</strong></div>
+
+      <div class="setup-group">
+        <span class="section-label">Band center button (||)</span>
         <div class="controls-row">
-          <button class="btn btn-sm ${oneTapSel}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE" ${disabled}>1-Tap MY UE</button>
-          <button class="btn btn-sm ${editModeSel}" data-action="set-wrist-mode" data-mode="EDIT_MODE" ${disabled}>EDIT #rev (Undo &amp; UE)</button>
+          <button class="btn ${editSel}" data-action="set-wrist-mode" data-mode="EDIT_MODE" aria-pressed="${vm.wristCenterMode === 'EDIT_MODE'}" ${disabled}>
+            <span>Edit point</span>
+            <span class="btn-sub">|| opens &lt; Undo / &gt; MY UE</span>
+          </button>
+          <button class="btn ${oneTapSel}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE" aria-pressed="${vm.wristCenterMode === 'ONE_TAP_UE'}" ${disabled}>
+            <span>1-Tap My Error</span>
+            <span class="btn-sub">|| logs MY UE directly</span>
+          </button>
         </div>
       </div>
-      <div>
-        <div class="muted" style="margin-bottom:8px;"><strong>Who serves first?</strong></div>
-        <div class="controls-stack">
-          <button class="btn ${watchSel}" data-action="set-server" data-team="watch" ${disabled}>Pick on watch (after warmup point)</button>
-          <div class="controls-row">
-            <button class="btn ${usSel}" data-action="set-server" data-team="0" ${disabled}>US Serve</button>
-            <button class="btn ${themSel}" data-action="set-server" data-team="1" ${disabled}>THEM Serve</button>
-          </div>
+
+      <div class="setup-group">
+        <span class="section-label">First server</span>
+        <div class="controls-row-3">
+          <button class="btn ${watchSel}" data-action="set-server" data-team="watch" aria-pressed="${vm.setupInitialServer === null}" ${disabled}>
+            <span>Pick on Band</span>
+            <span class="btn-sub">After warmup</span>
+          </button>
+          <button class="btn ${usSel}" data-action="set-server" data-team="0" aria-pressed="${vm.setupInitialServer === 0}" ${disabled}>US</button>
+          <button class="btn ${themSel}" data-action="set-server" data-team="1" aria-pressed="${vm.setupInitialServer === 1}" ${disabled}>THEM</button>
         </div>
       </div>
+
       <div class="controls-stack">
-        <button class="btn btn-primary" data-action="start-match" ${disabled}>
-          Start Match &amp; Link Wrist
+        <button class="btn btn-primary btn-cta" data-action="start-match" ${disabled}>
+          Start Match &amp; Link Band
         </button>
         ${
           vm.archiveBlockedDraft
             ? `<div class="confirm-box" data-testid="archive-blocked-box">
                  <div><strong>Previous match could not be archived to history.</strong> Export or retry saving before discarding it.</div>
                  <div class="controls-row">
-                   <button class="btn btn-sm btn-primary" data-action="retry-archive">Retry Save to History</button>
-                   <button class="btn btn-sm" data-action="export-match" data-source="current" data-format="json">Download JSON</button>
+                   <button class="btn btn-primary" data-action="retry-archive">Retry Save</button>
+                   <button class="btn" data-action="export-match" data-source="current" data-format="json">Download JSON</button>
                  </div>
-                 <button class="btn btn-sm" data-action="export-match" data-source="current" data-format="csv">Download CSV</button>
-                 <button class="btn btn-sm btn-danger" data-action="start-match-discard">Start New Match &amp; Discard Copy</button>
+                 <button class="btn" data-action="export-match" data-source="current" data-format="csv">Download CSV</button>
+                 <button class="btn btn-danger" data-action="start-match-discard">Start New Match &amp; Discard Copy</button>
                </div>`
             : ''
         }
@@ -185,178 +310,393 @@ function renderSetupScreen(vm) {
   `;
 }
 
-function renderMenuPanel(vm) {
-  if (!vm.ui.menuOpen || !vm.isWriter) return '';
-  const rawOpener = vm.record?.config?.initialServer;
-  const hasOpener = rawOpener === 0 || rawOpener === 1;
-  const altOpener = rawOpener === 0 ? 1 : 0;
-  const curLabel = rawOpener === 0 ? 'US' : 'THEM';
-  const altLabel = altOpener === 0 ? 'US' : 'THEM';
+function renderLoveAllOpenerSwitchHtml(vm) {
+  const s = vm.state;
+  const awaitingServer = s.status === 'ACTIVE' && s.needsInitialServer;
+  const isLoveAllWithServer = !awaitingServer && vm.record && vm.record.events.length === 0;
+  if (!isLoveAllWithServer || !vm.isWriter) return '';
+  const altServer = s.server === 0 ? 1 : 0;
+  const altServerLabel = altServer === 0 ? 'US' : 'THEM';
+  return `<button class="btn" data-action="confirm-opener" data-team="${altServer}">Wrong first server? Switch to ${altServerLabel}</button>`;
+}
 
-  const diagRows =
-    vm.diagEntries.length === 0
-      ? '<div class="muted">No diagnostic entries yet.</div>'
-      : vm.diagEntries
-          .map(
-            (e) =>
-              `<div>${escapeHtml(formatDiagTime(e.t))} · ${escapeHtml(e.action)} · ${escapeHtml(e.audioState)}${
-                e.revision !== null ? ` · #${e.revision}` : ''
-              }${e.detail ? ` · ${escapeHtml(e.detail)}` : ''}</div>`
-          )
-          .join('');
-
-  return `
-    <section class="card" data-testid="menu-panel">
-      <div class="banner-row">
-        <h3>Match Menu</h3>
-        <button class="btn btn-sm" data-action="close-menu">Close</button>
-      </div>
-
-      ${
-        hasOpener
-          ? vm.ui.confirmOpenerOpen
-            ? `<div class="confirm-box">
-                 <div>Switch first serving team from <strong>${curLabel}</strong> to <strong>${altLabel}</strong>? Scores, timestamps, and UE totals stay intact.</div>
-                 <div class="controls-row">
-                   <button class="btn btn-sm" data-action="cancel-opener">Cancel</button>
-                   <button class="btn btn-sm btn-primary" data-action="confirm-opener" data-team="${altOpener}">Switch to ${altLabel}</button>
-                 </div>
-               </div>`
-            : `<button class="btn" data-action="open-opener">Correct first serving team (currently ${curLabel})</button>`
-          : ''
-      }
-
-      ${
-        vm.ui.confirmFinishOpen
-          ? `<div class="confirm-box">
-               <div><strong>Finish match now?</strong> Saves partial score and disarms wrist controls. You can still Resume later.</div>
-               <div class="controls-row">
-                 <button class="btn btn-sm" data-action="cancel-finish">Cancel</button>
-                 <button class="btn btn-sm btn-danger" data-action="confirm-finish">Confirm Finish Now</button>
-               </div>
-             </div>`
-          : `<button class="btn btn-danger" data-action="open-finish">Finish Now</button>`
-      }
-
-      <div>
-        <div class="muted" style="margin-bottom:6px;"><strong>Wrist center button (||)</strong></div>
-        <div class="controls-row">
-          <button class="btn btn-sm ${vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : ''}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE">1-Tap MY UE</button>
-          <button class="btn btn-sm ${vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : ''}" data-action="set-wrist-mode" data-mode="EDIT_MODE">EDIT #rev (Undo &amp; UE)</button>
-        </div>
-      </div>
-
-      <button class="btn btn-sm" data-action="step-down">Release Writer Lock (Read-Only)</button>
-
-      <div>
-        <div class="banner-row" style="margin-bottom:6px;">
-          <span class="muted"><strong>Diagnostic Log (recent)</strong></span>
-          <div style="display:flex;gap:6px;">
-            <button class="btn btn-sm" data-action="copy-diag">Copy</button>
-            <button class="btn btn-sm" data-action="clear-diag">Clear</button>
-          </div>
-        </div>
-        <div class="diag-list">${diagRows}</div>
-      </div>
-    </section>
-  `;
+function getLiveBandPanelLabel(vm) {
+  if (!vm.isWriter) return 'Viewing only';
+  if (vm.wrist.status === 'ARMED') return 'Band controls ready';
+  return 'Band status';
 }
 
 function renderLiveScreen(vm) {
   const s = vm.state;
   const disabled = vm.isWriter ? '' : 'disabled';
   const undoDisabled = vm.canUndo ? '' : 'disabled';
-  const gamesText = s.inTieBreak ? 'TIE-BREAK (6-6)' : `${s.games[0]} - ${s.games[1]}`;
   const awaitingServer = s.status === 'ACTIVE' && s.needsInitialServer;
-  const servingLabel = s.server === 0 ? 'US' : s.server === 1 ? 'THEM' : 'Awaiting server';
-  const isLoveAllWithServer = !awaitingServer && vm.record && vm.record.events.length === 0;
-  const altServer = s.server === 0 ? 1 : 0;
-  const altServerLabel = altServer === 0 ? 'US' : 'THEM';
+  const usServing = s.server === 0;
+  const themServing = s.server === 1;
+  const gamesText = s.inTieBreak ? 'TB 6-6' : `${s.games[0]} - ${s.games[1]}`;
+  const setsMeta = vm.setLines.length ? ` · ${vm.setLines.join(', ')}` : '';
 
   return `
-    <section class="card" data-screen="LIVE">
-      <div class="score-header">
-        <span>Sets ${s.sets[0]}-${s.sets[1]} · ${escapeHtml(s.scoringMode)} ${vm.setLines.length ? `(${escapeHtml(vm.setLines.join(', '))})` : ''}</span>
-        <span><span data-duration-text>${escapeHtml(vm.durationText)}</span> · #${s.revision}</span>
-      </div>
+    <section class="controls-stack" data-screen="LIVE" data-live-mounted="true" data-awaiting-server="${awaitingServer ? 'true' : 'false'}">
+      <div class="court-board">
+        <div class="court-meta">
+          <span data-live-meta-left>BO3 · ${escapeHtml(s.scoringMode)}${escapeHtml(setsMeta)}</span>
+          <span><span data-duration-text>${escapeHtml(vm.durationText)}</span> · <span data-live-rev>#${s.revision}</span></span>
+        </div>
 
-      <div class="scoreboard-grid">
-        <div class="team-col">
-          <div class="team-name">
-            ${s.server === 0 ? '<span class="serve-dot" aria-label="Serving"></span>' : ''}
-            <span>US</span>
+        <div class="court-halves">
+          <div class="court-half ${usServing ? 'court-half-serving' : ''}" data-half="us">
+            <div class="half-header">
+              <span class="team-tag">US</span>
+              <span class="serve-badge" data-serve-badge="us" ${usServing ? '' : 'hidden'}><span class="serve-ball" aria-hidden="true"></span>Serving</span>
+            </div>
+            <div class="big-points" data-points="us">${escapeHtml(s.pointsLabel[0])}</div>
           </div>
-          <div class="big-points">${escapeHtml(s.pointsLabel[0])}</div>
-        </div>
-        <div class="points-sep">-</div>
-        <div class="team-col">
-          <div class="team-name">
-            <span>THEM</span>
-            ${s.server === 1 ? '<span class="serve-dot" aria-label="Serving"></span>' : ''}
+
+          <div class="court-half ${themServing ? 'court-half-serving' : ''}" data-half="them">
+            <div class="half-header">
+              <span class="team-tag">THEM</span>
+              <span class="serve-badge" data-serve-badge="them" ${themServing ? '' : 'hidden'}><span class="serve-ball" aria-hidden="true"></span>Serving</span>
+            </div>
+            <div class="big-points" data-points="them">${escapeHtml(s.pointsLabel[1])}</div>
           </div>
-          <div class="big-points">${escapeHtml(s.pointsLabel[1])}</div>
+        </div>
+
+        <div class="court-baseline">
+          <div class="baseline-cell">
+            <span class="section-label">Sets</span>
+            <span class="baseline-val" data-sets>${s.sets[0]} - ${s.sets[1]}</span>
+          </div>
+          <div class="baseline-cell">
+            <span class="section-label" data-games-label>${s.inTieBreak ? 'Tie-break' : 'Games'}</span>
+            <span class="baseline-val" data-games>${escapeHtml(gamesText)}</span>
+          </div>
+          <div class="baseline-cell">
+            <span class="section-label">My UEs</span>
+            <span class="baseline-val baseline-val-ue" data-ues>${s.counts.myUePoints} (${escapeHtml(vm.uePctText)})</span>
+          </div>
         </div>
       </div>
-
-      <div class="sub-scores">
-        <div class="sub-score-item">
-          <span class="sub-score-label">Games</span>
-          <span>${escapeHtml(gamesText)}</span>
-        </div>
-        <div class="sub-score-item">
-          <span class="sub-score-label">My UEs</span>
-          <span>${s.counts.myUePoints} (${escapeHtml(vm.uePctText)})</span>
-        </div>
-        <div class="sub-score-item">
-          <span class="sub-score-label">Serving</span>
-          <span>${escapeHtml(servingLabel)}</span>
-        </div>
-      </div>
-
-      ${
-        vm.wristPreview
-          ? `<div class="wrist-preview">
-               <div class="wrist-preview-label">Band 9 Active Preview</div>
-               <div class="wrist-line-title">${escapeHtml(vm.wristPreview.title)}</div>
-               <div class="wrist-line-artist">${escapeHtml(vm.wristPreview.artist)}</div>
-             </div>`
-          : ''
-      }
 
       ${
         awaitingServer
-          ? `<div class="confirm-box" data-testid="server-picker">
-               <div><strong>Warmup Point — Who serves first?</strong></div>
-               <div class="muted">Tap <strong>&lt; (US)</strong> or <strong>&gt; (THEM)</strong> on your Band 9 Active after the 4-touch rally, or pick below.</div>
-               <div class="controls-row">
-                 <button class="btn btn-us" data-action="pick-initial-server" data-team="0" ${disabled}>US Serves</button>
-                 <button class="btn btn-them" data-action="pick-initial-server" data-team="1" ${disabled}>THEM Serves</button>
+          ? `<div class="court-panel" data-testid="server-picker">
+               <div>
+                 <strong>Who serves first?</strong>
+                 <div class="muted">Tap &lt; (US) or &gt; (THEM) on your Band after the warmup rally, or choose below. Neither awards a point.</div>
                </div>
-             </div>
-             <button class="btn" data-action="toggle-menu" ${disabled}>Menu</button>`
-          : `<div class="controls-row">
-               <button class="btn btn-us" data-action="score" data-code="A" ${disabled}>US +1</button>
-               <button class="btn btn-them" data-action="score" data-code="B" ${disabled}>THEM +1</button>
-             </div>
+               <div class="controls-row">
+                 <button class="btn btn-pad" data-action="pick-initial-server" data-team="0" ${disabled}>US SERVES</button>
+                 <button class="btn btn-pad btn-pad-them" data-action="pick-initial-server" data-team="1" ${disabled}>THEM SERVES</button>
+               </div>
+               <button class="btn" data-action="toggle-menu" ${disabled}>Match Menu</button>
+             </div>`
+          : `<div class="controls-stack">
+               <div class="controls-row">
+                 <button class="btn btn-pad" data-action="score" data-code="A" ${disabled}>US +1</button>
+                 <button class="btn btn-pad btn-pad-them" data-action="score" data-code="B" ${disabled}>THEM +1</button>
+               </div>
 
-             <button class="btn btn-ue" data-action="score" data-code="E" ${disabled}>
-               MY UE (+1 Them · My Error)
-             </button>
+               <button class="btn btn-ue" data-action="score" data-code="E" ${disabled}>
+                 <span>MY UE</span>
+                 <span class="btn-sub">My unforced error · +1 THEM</span>
+               </button>
 
-             ${
-               isLoveAllWithServer && vm.isWriter
-                 ? `<button class="btn btn-sm" data-action="confirm-opener" data-team="${altServer}">Change First Server (switch to ${altServerLabel})</button>`
-                 : ''
-             }
+               <div data-loveall-slot>${renderLoveAllOpenerSwitchHtml(vm)}</div>
 
-             <div class="controls-row">
-               <button class="btn" data-action="undo" ${undoDisabled}>Undo</button>
-               <button class="btn" data-action="toggle-menu" ${disabled}>Menu</button>
+               <div class="controls-row">
+                 <button class="btn" data-action="undo" ${undoDisabled}>Undo</button>
+                 <button class="btn" data-action="toggle-menu" ${disabled}>Match Menu</button>
+               </div>
              </div>`
       }
-    </section>
 
-    ${renderMenuPanel(vm)}
+      <div data-band-slot>
+        ${renderBandPanel(vm, { label: getLiveBandPanelLabel(vm) })}
+      </div>
+    </section>
+  `;
+}
+
+function updateLiveScreenInPlace(screenEl, vm) {
+  const s = vm.state;
+  const usServing = s.server === 0;
+  const themServing = s.server === 1;
+  const gamesText = s.inTieBreak ? 'TB 6-6' : `${s.games[0]} - ${s.games[1]}`;
+  const setsMeta = vm.setLines.length ? ` · ${vm.setLines.join(', ')}` : '';
+
+  const metaLeft = screenEl.querySelector('[data-live-meta-left]');
+  if (metaLeft) metaLeft.textContent = `BO3 · ${s.scoringMode}${setsMeta}`;
+  const durEl = screenEl.querySelector('[data-duration-text]');
+  if (durEl) durEl.textContent = vm.durationText;
+  const revEl = screenEl.querySelector('[data-live-rev]');
+  if (revEl) revEl.textContent = `#${s.revision}`;
+
+  const usHalf = screenEl.querySelector('[data-half="us"]');
+  if (usHalf) usHalf.classList.toggle('court-half-serving', usServing);
+  const themHalf = screenEl.querySelector('[data-half="them"]');
+  if (themHalf) themHalf.classList.toggle('court-half-serving', themServing);
+
+  const usBadge = screenEl.querySelector('[data-serve-badge="us"]');
+  if (usBadge) usBadge.hidden = !usServing;
+  const themBadge = screenEl.querySelector('[data-serve-badge="them"]');
+  if (themBadge) themBadge.hidden = !themServing;
+
+  const usPts = screenEl.querySelector('[data-points="us"]');
+  if (usPts) usPts.textContent = s.pointsLabel[0];
+  const themPts = screenEl.querySelector('[data-points="them"]');
+  if (themPts) themPts.textContent = s.pointsLabel[1];
+
+  const setsEl = screenEl.querySelector('[data-sets]');
+  if (setsEl) setsEl.textContent = `${s.sets[0]} - ${s.sets[1]}`;
+  const gamesLbl = screenEl.querySelector('[data-games-label]');
+  if (gamesLbl) gamesLbl.textContent = s.inTieBreak ? 'Tie-break' : 'Games';
+  const gamesEl = screenEl.querySelector('[data-games]');
+  if (gamesEl) gamesEl.textContent = gamesText;
+  const uesEl = screenEl.querySelector('[data-ues]');
+  if (uesEl) uesEl.textContent = `${s.counts.myUePoints} (${vm.uePctText})`;
+
+  for (const btn of screenEl.querySelectorAll(
+    'button[data-action="score"], button[data-action="pick-initial-server"], button[data-action="toggle-menu"]'
+  )) {
+    btn.disabled = !vm.isWriter;
+  }
+
+  const undoBtn = screenEl.querySelector('button[data-action="undo"]');
+  if (undoBtn) {
+    const wasFocused = document.activeElement === undoBtn;
+    undoBtn.disabled = !vm.canUndo;
+    if (wasFocused && undoBtn.disabled) {
+      screenEl.querySelector('button[data-action="score"][data-code="A"]')?.focus({ preventScroll: true });
+    }
+  }
+
+  const loveAllSlot = screenEl.querySelector('[data-loveall-slot]');
+  if (loveAllSlot) {
+    const nextHtml = renderLoveAllOpenerSwitchHtml(vm);
+    if (loveAllSlot.dataset.lastHtml !== nextHtml) {
+      const hadFocus = loveAllSlot.contains(document.activeElement);
+      loveAllSlot.innerHTML = nextHtml;
+      loveAllSlot.dataset.lastHtml = nextHtml;
+      if (hadFocus && !nextHtml) {
+        screenEl.querySelector('button[data-action="score"][data-code="A"]')?.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  const bandSlot = screenEl.querySelector('[data-band-slot]');
+  if (bandSlot) {
+    const nextBandHtml = renderBandPanel(vm, { label: getLiveBandPanelLabel(vm) });
+    if (bandSlot.dataset.lastHtml !== nextBandHtml) {
+      bandSlot.innerHTML = nextBandHtml;
+      bandSlot.dataset.lastHtml = nextBandHtml;
+    }
+  }
+}
+
+function renderMenuOpenerSlotHtml(vm) {
+  const rawOpener = vm.record?.config?.initialServer;
+  const hasOpener = rawOpener === 0 || rawOpener === 1;
+  if (!hasOpener) return '';
+  const altOpener = rawOpener === 0 ? 1 : 0;
+  const curLabel = rawOpener === 0 ? 'US' : 'THEM';
+  const altLabel = altOpener === 0 ? 'US' : 'THEM';
+
+  if (vm.ui.confirmOpenerOpen) {
+    return `<div class="confirm-box">
+      <div>Switch first server from <strong>${curLabel}</strong> to <strong>${altLabel}</strong>? Scores, timestamps, and UE totals stay intact.</div>
+      <div class="controls-row">
+        <button class="btn" data-action="cancel-opener">Cancel</button>
+        <button class="btn btn-primary" data-action="confirm-opener" data-team="${altOpener}">Switch to ${altLabel}</button>
+      </div>
+    </div>`;
+  }
+  return `<button class="btn" data-action="open-opener">Correct first server (currently ${curLabel})</button>`;
+}
+
+function renderMenuFinishSlotHtml(vm) {
+  if (vm.ui.confirmFinishOpen) {
+    return `<div class="confirm-box">
+      <div><strong>Finish match early?</strong> Saves current score and disarms band controls. You can still Resume later.</div>
+      <div class="controls-row">
+        <button class="btn" data-action="cancel-finish">Cancel</button>
+        <button class="btn btn-danger" data-action="confirm-finish">Confirm Finish</button>
+      </div>
+    </div>`;
+  }
+  return `<button class="btn btn-danger" data-action="open-finish">Finish Match Early</button>`;
+}
+
+function renderMenuDiagRowsHtml(vm) {
+  if (vm.diagEntries.length === 0) {
+    return '<div class="muted">No diagnostic entries yet.</div>';
+  }
+  return vm.diagEntries
+    .map(
+      (e) =>
+        `<div>${escapeHtml(formatDiagTime(e.t))} · ${escapeHtml(e.action)} · ${escapeHtml(e.audioState)}${
+          e.revision !== null ? ` · #${e.revision}` : ''
+        }${e.detail ? ` · ${escapeHtml(e.detail)}` : ''}</div>`
+    )
+    .join('');
+}
+
+function renderMenuSheet(vm) {
+  if (!vm.ui.menuOpen || !vm.isWriter || vm.screen !== 'LIVE') return '';
+  const editSel = vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : 'btn-choice';
+  const oneTapSel = vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : 'btn-choice';
+
+  return `
+    <div class="sheet-backdrop" data-backdrop="menu">
+      <section class="sheet" role="dialog" aria-modal="true" aria-label="Match Menu" data-testid="menu-panel">
+        <div class="sheet-header">
+          <h2>Match Menu</h2>
+          <button class="btn btn-inline" data-action="close-menu" data-sheet-close="menu">Close</button>
+        </div>
+
+        <div class="sheet-body">
+          <div class="setup-group">
+            <span class="section-label">Band center button (||)</span>
+            <div class="controls-row">
+              <button class="btn ${editSel}" data-action="set-wrist-mode" data-mode="EDIT_MODE" aria-pressed="${vm.wristCenterMode === 'EDIT_MODE'}">
+                <span>Edit point</span>
+                <span class="btn-sub">&lt; Undo / &gt; MY UE</span>
+              </button>
+              <button class="btn ${oneTapSel}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE" aria-pressed="${vm.wristCenterMode === 'ONE_TAP_UE'}">
+                <span>1-Tap My Error</span>
+                <span class="btn-sub">Direct MY UE</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="controls-row">
+            ${
+              vm.wrist.supported
+                ? `<button class="btn" data-action="relink-wrist">Re-link Band</button>`
+                : ''
+            }
+            <button class="btn" data-action="toggle-guide">Band Quick Guide</button>
+          </div>
+
+          <div data-menu-opener-slot>${renderMenuOpenerSlotHtml(vm)}</div>
+          <div data-menu-finish-slot>${renderMenuFinishSlotHtml(vm)}</div>
+
+          <details class="advanced-details">
+            <summary>
+              <span>Device &amp; Diagnostics</span>
+              <span aria-hidden="true">▾</span>
+            </summary>
+            <div class="advanced-content">
+              <button class="btn" data-action="step-down">Release control to another tab</button>
+              <div class="strip-row">
+                <span class="section-label">Diagnostic Log (recent)</span>
+                <div style="display:flex;gap:6px;">
+                  <button class="btn btn-inline" data-action="copy-diag">Copy</button>
+                  <button class="btn btn-inline" data-action="clear-diag">Clear</button>
+                </div>
+              </div>
+              <div class="diag-list" data-menu-diag-slot>${renderMenuDiagRowsHtml(vm)}</div>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function updateMenuSheetInPlace(sheetEl, vm) {
+  for (const btn of sheetEl.querySelectorAll('button[data-action="set-wrist-mode"]')) {
+    const selected = btn.dataset.mode === vm.wristCenterMode;
+    btn.classList.toggle('btn-selected', selected);
+    btn.classList.toggle('btn-choice', !selected);
+    btn.setAttribute('aria-pressed', String(selected));
+  }
+
+  const openerSlot = sheetEl.querySelector('[data-menu-opener-slot]');
+  if (openerSlot) {
+    const nextHtml = renderMenuOpenerSlotHtml(vm);
+    if (openerSlot.dataset.lastHtml !== nextHtml) {
+      const hadFocus = openerSlot.contains(document.activeElement);
+      openerSlot.innerHTML = nextHtml;
+      openerSlot.dataset.lastHtml = nextHtml;
+      if (hadFocus) {
+        openerSlot.querySelector('button')?.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  const finishSlot = sheetEl.querySelector('[data-menu-finish-slot]');
+  if (finishSlot) {
+    const nextHtml = renderMenuFinishSlotHtml(vm);
+    if (finishSlot.dataset.lastHtml !== nextHtml) {
+      const hadFocus = finishSlot.contains(document.activeElement);
+      finishSlot.innerHTML = nextHtml;
+      finishSlot.dataset.lastHtml = nextHtml;
+      if (hadFocus) {
+        finishSlot.querySelector('button')?.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  const diagSlot = sheetEl.querySelector('[data-menu-diag-slot]');
+  if (diagSlot) {
+    const nextHtml = renderMenuDiagRowsHtml(vm);
+    if (diagSlot.dataset.lastHtml !== nextHtml) {
+      diagSlot.innerHTML = nextHtml;
+      diagSlot.dataset.lastHtml = nextHtml;
+    }
+  }
+}
+
+function renderGuideSheet(vm) {
+  if (!vm.ui.guideOpen) return '';
+  const showWarmupStep =
+    vm.screen === 'SETUP'
+      ? vm.setupInitialServer === null
+      : Boolean(vm.state?.status === 'ACTIVE' && vm.state?.needsInitialServer);
+  const steps = getBandGuideSteps(vm.wristCenterMode, { showWarmupStep });
+  const modeLabel = vm.wristCenterMode === 'EDIT_MODE' ? 'Edit point (default)' : '1-Tap My Error';
+
+  return `
+    <div class="sheet-backdrop" data-backdrop="guide">
+      <section class="sheet" role="dialog" aria-modal="true" aria-label="Band 9 Active Quick Guide" data-testid="guide-panel">
+        <div class="sheet-header">
+          <h2>Band 9 Active Guide</h2>
+          <button class="btn btn-inline" data-action="close-guide" data-sheet-close="guide">Close</button>
+        </div>
+
+        <div class="sheet-body">
+          <div class="muted">Active center mode: <strong>${escapeHtml(modeLabel)}</strong>. Start a native Band Workout, then swipe to Music Controls.</div>
+
+          ${steps
+            .map(
+              (s) => `
+                <div class="guide-step">
+                  <div class="guide-step-head">
+                    <span class="guide-num">${s.step}</span>
+                    <span>${escapeHtml(s.title)}</span>
+                  </div>
+                  <div class="guide-band-sample">
+                    <div>${escapeHtml(s.bandTitle)}</div>
+                    <div>${escapeHtml(s.bandArtist)}</div>
+                  </div>
+                  <div class="muted">${escapeHtml(s.caption)}</div>
+                </div>
+              `
+            )
+            .join('')}
+
+          <div class="guide-step">
+            <div class="guide-step-head"><span>If Band does not respond</span></div>
+            <div class="muted">1. Close Spotify, YouTube, or other media apps, then tap <strong>Re-link Band</strong>.</div>
+            <div class="muted">2. Confirm <strong>Mi Fitness</strong> has Android Notification Access enabled and Chrome notifications are allowed.</div>
+            <div class="muted">3. Check Band Music Controls shows PadelScore before locking your phone.</div>
+          </div>
+
+          <button class="btn btn-primary" data-action="close-guide">Got it</button>
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -366,38 +706,89 @@ function formatPartialScoreLine(s) {
     isManual &&
     (s.games[0] > 0 || s.games[1] > 0 || s.points[0] > 0 || s.points[1] > 0 || s.inTieBreak);
   if (!hasPartial) return '';
-  return `Partial set: Games ${s.games[0]}-${s.games[1]}${s.inTieBreak ? ' (TB)' : ''}, Points ${s.pointsLabel[0]}-${s.pointsLabel[1]}`;
+  return `Stopped at Games ${s.games[0]}-${s.games[1]}${s.inTieBreak ? ' (Tie-break)' : ''}, Points ${s.pointsLabel[0]}-${s.pointsLabel[1]}`;
 }
 
-function renderAnalyticsPanel(analytics, exportSource, exportMatchId = null) {
-  if (!analytics) return '';
+function renderPointShareBlock(counts) {
+  const share = computePointShare(counts);
+  const ueLostText = formatUePercent(share.uePctOfLost);
+
+  return `
+    <div class="controls-stack">
+      <div class="strip-row">
+        <span class="section-label">Point breakdown (${share.totalPoints} played)</span>
+        <span class="ue-label-text">My UEs: ${escapeHtml(ueLostText)} of points lost</span>
+      </div>
+      ${
+        share.totalPoints > 0
+          ? `<div class="share-bar" aria-hidden="true">
+               <div class="share-seg-us" style="width:${share.usPct}%"></div>
+               <div class="share-seg-them" style="width:${share.themOtherPct}%"></div>
+               <div class="share-seg-ue" style="width:${share.myUePct}%"></div>
+             </div>`
+          : ''
+      }
+      <div class="share-totals">
+        <div class="share-stat">
+          <span class="section-label">US points</span>
+          <span class="share-stat-val">${share.usPoints}</span>
+        </div>
+        <div class="share-stat">
+          <span class="section-label">Other THEM</span>
+          <span class="share-stat-val">${share.themOtherPoints}</span>
+        </div>
+        <div class="share-stat">
+          <span class="section-label">My UEs</span>
+          <span class="share-stat-val ue-label-text">${share.myUePoints}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAnalyticsPanel(analytics, scoringMode, exportSource, exportMatchId = null) {
+  const matchIdAttr = exportMatchId ? ` data-match-id="${escapeHtml(exportMatchId)}"` : '';
+
+  if (!analytics) {
+    return `
+      <div class="analytics-section" data-testid="analytics-panel">
+        <div class="muted">Detailed analytics unavailable (—).</div>
+        <div class="controls-row">
+          <button class="btn" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="csv">Download CSV</button>
+          <button class="btn" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="json">Download JSON</button>
+        </div>
+      </div>
+    `;
+  }
+
   const { clutch, serveReturn, serviceHold, clusters, windows15m, unbucketedCount } = analytics;
   const holdText =
     serviceHold.completedOrdinaryServiceGames > 0
       ? `${serviceHold.ordinaryServiceGamesWon}/${serviceHold.completedOrdinaryServiceGames} (${formatUePercent(serviceHold.holdRate)})`
       : '—';
-  const matchIdAttr = exportMatchId ? ` data-match-id="${escapeHtml(exportMatchId)}"` : '';
+
+  const showGoldenRow = scoringMode === 'GP' || clutch.byLabel.goldenPoint.totalPoints > 0;
 
   const clusterRows =
     clusters.length === 0
-      ? '<div class="muted">No UE clusters (2+ UEs within 3 consecutive points).</div>'
+      ? '<div class="muted">No UE clusters (2+ unforced errors within 3 consecutive points).</div>'
       : clusters
           .map(
             (c, idx) =>
-              `<div class="cluster-item"><strong>Cluster ${idx + 1}:</strong> ${c.ueCount} UEs across pts #${c.startPointNumber}–#${c.endPointNumber} (span ${c.spanPoints}, Set ${c.setNumber} · ${escapeHtml(c.startScoreText)})</div>`
+              `<div class="cluster-item"><strong>Cluster ${idx + 1}:</strong> ${c.ueCount} My UEs across points #${c.startPointNumber}–#${c.endPointNumber} (Set ${c.setNumber} · ${escapeHtml(c.startScoreText)})</div>`
           )
           .join('');
 
   const windowRows =
     windows15m.length === 0
-      ? '<div class="muted">No timed rallies recorded yet.</div>'
+      ? '<div class="muted">No timed rallies recorded.</div>'
       : `<table class="analytics-table">
            <thead>
              <tr>
-               <th>Window</th>
-               <th>MY UE</th>
+               <th>Elapsed</th>
+               <th>My UEs</th>
                <th>Lost</th>
-               <th>Pts (n)</th>
+               <th>Pts</th>
                <th>UE %</th>
              </tr>
            </thead>
@@ -418,27 +809,35 @@ function renderAnalyticsPanel(analytics, exportSource, exportMatchId = null) {
 
   return `
     <div class="analytics-section" data-testid="analytics-panel">
-      <h3>UE Analytics</h3>
+      <div class="tape-block">
+        <span class="section-label">Match Rally Tape</span>
+        ${renderMatchTapeSvg(analytics)}
+        <div class="tape-legend">
+          <span class="legend-item"><span class="legend-swatch legend-us"></span>Above: US</span>
+          <span class="legend-item"><span class="legend-swatch legend-them"></span>Below: Other THEM</span>
+          <span class="legend-item"><span class="legend-swatch legend-ue"></span>Diamond spike: My UE</span>
+        </div>
+      </div>
 
-      <div class="stat-grid">
-        <div class="stat-box">
-          <span class="sub-score-label">Clutch UEs (Unique)</span>
-          <span class="stat-value">${clutch.clutchUeTotal}</span>
+      <div class="insight-grid">
+        <div class="insight-cell">
+          <span class="section-label">Clutch My UEs</span>
+          <span class="insight-val">${clutch.clutchUeTotal}</span>
           <span class="muted">${escapeHtml(formatUePercent(clutch.clutchUePctOfPointsLost))} of ${clutch.clutchPointsLost} lost</span>
         </div>
-        <div class="stat-box">
-          <span class="sub-score-label">Ordinary Hold Rate</span>
-          <span class="stat-value" style="font-size:19px;">${escapeHtml(holdText)}</span>
-          <span class="muted">Excludes incomplete &amp; TB</span>
+        <div class="insight-cell">
+          <span class="section-label">Service Hold</span>
+          <span class="insight-val" style="font-size:18px;">${escapeHtml(holdText)}</span>
+          <span class="muted">Completed non-TB games</span>
         </div>
-        <div class="stat-box">
-          <span class="sub-score-label">Serving UEs</span>
-          <span class="stat-value">${serveReturn.serving.myUePoints}</span>
+        <div class="insight-cell">
+          <span class="section-label">Serving My UEs</span>
+          <span class="insight-val">${serveReturn.serving.myUePoints}</span>
           <span class="muted">${escapeHtml(formatUePercent(serveReturn.serving.uePctOfPointsLost))} of ${serveReturn.serving.pointsLost} lost</span>
         </div>
-        <div class="stat-box">
-          <span class="sub-score-label">Returning UEs</span>
-          <span class="stat-value">${serveReturn.returning.myUePoints}</span>
+        <div class="insight-cell">
+          <span class="section-label">Returning My UEs</span>
+          <span class="insight-val">${serveReturn.returning.myUePoints}</span>
           <span class="muted">${escapeHtml(formatUePercent(serveReturn.returning.uePctOfPointsLost))} of ${serveReturn.returning.pointsLost} lost</span>
         </div>
       </div>
@@ -446,19 +845,23 @@ function renderAnalyticsPanel(analytics, exportSource, exportMatchId = null) {
       <table class="analytics-table">
         <thead>
           <tr>
-            <th>Clutch Type</th>
-            <th>MY UE</th>
+            <th>Pressure Moment</th>
+            <th>My UEs</th>
             <th>Lost</th>
             <th>Total</th>
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <td>Golden Point (40-40)</td>
-            <td>${clutch.byLabel.goldenPoint.myUePoints}</td>
-            <td>${clutch.byLabel.goldenPoint.pointsLost}</td>
-            <td>${clutch.byLabel.goldenPoint.totalPoints}</td>
-          </tr>
+          ${
+            showGoldenRow
+              ? `<tr>
+                   <td>Golden Point (40-40)</td>
+                   <td>${clutch.byLabel.goldenPoint.myUePoints}</td>
+                   <td>${clutch.byLabel.goldenPoint.pointsLost}</td>
+                   <td>${clutch.byLabel.goldenPoint.totalPoints}</td>
+                 </tr>`
+              : ''
+          }
           <tr>
             <td>Break Point</td>
             <td>${clutch.byLabel.breakPoint.myUePoints}</td>
@@ -480,24 +883,29 @@ function renderAnalyticsPanel(analytics, exportSource, exportMatchId = null) {
         </tbody>
       </table>
 
-      <div>
-        <div class="muted" style="margin-bottom:6px;"><strong>UE Clusters (${clusters.length})</strong></div>
+      <div class="setup-group">
+        <span class="section-label">UE Clusters (${clusters.length})</span>
         <div class="controls-stack">${clusterRows}</div>
       </div>
 
-      <div>
-        <div class="muted" style="margin-bottom:6px;"><strong>15-Minute Elapsed Windows</strong></div>
-        ${windowRows}
-        ${
-          unbucketedCount > 0
-            ? `<div class="muted" style="margin-top:4px;">${unbucketedCount} rally(s) excluded from time windows due to invalid timestamp.</div>`
-            : ''
-        }
-      </div>
+      <details class="advanced-details">
+        <summary>
+          <span>15-Minute Elapsed Windows</span>
+          <span aria-hidden="true">▾</span>
+        </summary>
+        <div class="advanced-content">
+          ${windowRows}
+          ${
+            unbucketedCount > 0
+              ? `<div class="muted">${unbucketedCount} rally(s) excluded due to invalid timestamp.</div>`
+              : ''
+          }
+        </div>
+      </details>
 
       <div class="controls-row">
-        <button class="btn btn-sm" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="csv">Download CSV</button>
-        <button class="btn btn-sm" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="json">Download JSON</button>
+        <button class="btn" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="csv">Download CSV</button>
+        <button class="btn" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="json">Download JSON</button>
       </div>
     </div>
   `;
@@ -506,57 +914,38 @@ function renderAnalyticsPanel(analytics, exportSource, exportMatchId = null) {
 function renderMatchOverScreen(vm) {
   const s = vm.state;
   const isManual = s.status === 'FINISHED_MANUAL';
-  const headline = isManual
-    ? 'Match Finished Manually'
-    : s.winner === 0
-      ? 'Match Won — US'
-      : 'Match Won — THEM';
+  const isWin = !isManual && s.winner === 0;
+  const headline = isManual ? 'Match Ended Early' : isWin ? 'US Won' : 'THEM Won';
   const partialLine = formatPartialScoreLine(s);
 
   return `
-    <section class="card" data-screen="MATCH_OVER">
-      <div class="score-header">
-        <span>${isManual ? 'FINISHED_MANUAL' : 'WON'} · ${escapeHtml(s.scoringMode)}</span>
-        <span>${escapeHtml(vm.durationText)} · #${s.revision}</span>
+    <section class="court-panel" data-screen="MATCH_OVER">
+      <div class="verdict-head">
+        <div class="strip-row">
+          <span class="section-label">${isManual ? 'Ended early' : 'Final'} · ${escapeHtml(s.scoringMode)}</span>
+          <span class="muted">${escapeHtml(vm.durationText)} · #${s.revision}</span>
+        </div>
+        <div class="verdict-title ${isWin ? 'verdict-win' : ''}">${escapeHtml(headline)}</div>
+        <div class="verdict-sets">
+          Sets ${s.sets[0]}-${s.sets[1]}${vm.setLines.length ? ` · ${escapeHtml(vm.setLines.join('  '))}` : ''}
+        </div>
+        ${partialLine ? `<div class="muted">${escapeHtml(partialLine)}</div>` : ''}
       </div>
-      <h1>${escapeHtml(headline)}</h1>
-      <div>
-        <strong>Sets:</strong> ${s.sets[0]}-${s.sets[1]}
-        ${vm.setLines.length ? ` (${escapeHtml(vm.setLines.join(', '))})` : ''}
-      </div>
-      ${partialLine ? `<div class="muted">${escapeHtml(partialLine)}</div>` : ''}
 
       ${
         vm.history.error
-          ? `<div class="banner banner-warn" data-testid="history-error-banner">
+          ? `<div class="strip strip-warn" data-testid="history-error-banner">
                <div>${escapeHtml(vm.history.error)}</div>
                ${
                  vm.isWriter
-                   ? `<button class="btn btn-sm btn-primary" data-action="retry-archive">Retry Save to History</button>`
+                   ? `<button class="btn btn-inline btn-primary" data-action="retry-archive">Retry Save to History</button>`
                    : ''
                }
              </div>`
           : ''
       }
 
-      <div class="stat-grid">
-        <div class="stat-box">
-          <span class="sub-score-label">Us Won (A)</span>
-          <span class="stat-value">${s.counts.ourPoints}</span>
-        </div>
-        <div class="stat-box">
-          <span class="sub-score-label">Them Other (B)</span>
-          <span class="stat-value">${s.counts.themOtherPoints}</span>
-        </div>
-        <div class="stat-box">
-          <span class="sub-score-label">My UEs (E)</span>
-          <span class="stat-value">${s.counts.myUePoints}</span>
-        </div>
-        <div class="stat-box">
-          <span class="sub-score-label">My UEs / Pts Lost</span>
-          <span class="stat-value">${escapeHtml(vm.uePctText)}</span>
-        </div>
-      </div>
+      ${renderPointShareBlock(s.counts)}
 
       <div class="controls-stack">
         ${
@@ -576,7 +965,7 @@ function renderMatchOverScreen(vm) {
         }
       </div>
 
-      ${renderAnalyticsPanel(vm.matchOverAnalytics, 'current')}
+      ${renderAnalyticsPanel(vm.matchOverAnalytics, s.scoringMode, 'current')}
     </section>
   `;
 }
@@ -585,16 +974,16 @@ function renderHistoryScreen(vm) {
   const h = vm.history;
   const backLabel =
     vm.baseScreen === 'LIVE'
-      ? 'Back to Live Match'
+      ? 'Back to Match'
       : vm.baseScreen === 'MATCH_OVER'
-        ? 'Back to Match Over'
+        ? 'Back to Result'
         : 'Back';
 
   const statusNote =
     h.status === 'CORRUPT' || h.status === 'READ_ERROR'
-      ? `<div class="banner banner-err">History storage is unreadable (${escapeHtml(h.status)}). Stored data was left intact.</div>`
+      ? `<div class="strip strip-err">History storage is unreadable (${escapeHtml(h.status)}). Stored data was left intact.</div>`
       : h.corruptCount > 0
-        ? `<div class="banner banner-warn">${h.corruptCount} unreadable history row(s) detected. Valid matches remain viewable/exportable; history edits are paused to preserve stored data byte-for-byte.</div>`
+        ? `<div class="strip strip-warn">${h.corruptCount} unreadable history row(s) detected. Valid matches stay viewable and exportable; history edits are paused to preserve stored data.</div>`
         : '';
 
   const rows =
@@ -602,21 +991,24 @@ function renderHistoryScreen(vm) {
       ? '<div class="muted">No archived matches yet. Finished matches appear here automatically.</div>'
       : h.items
           .map((item) => {
-            const badge =
-              item.status === 'FINISHED_MANUAL'
-                ? 'MANUAL'
-                : item.winner === 0
-                  ? 'WIN'
-                  : 'LOSS';
+            const isManual = item.status === 'FINISHED_MANUAL';
+            const isWin = !isManual && item.winner === 0;
+            const badge = isManual ? 'Ended early' : isWin ? 'US Won' : 'THEM Won';
+            const rowCls = isManual
+              ? 'history-item'
+              : isWin
+                ? 'history-item history-item-win'
+                : 'history-item history-item-loss';
             const confirmOpen = h.confirmDeleteMatchId === item.matchId;
+
             return `
-              <div class="history-item" data-history-id="${escapeHtml(item.matchId)}">
-                <div class="banner-row">
-                  <strong>${badge} · Sets ${escapeHtml(item.setsText)} (${escapeHtml(item.scoringMode)})</strong>
+              <div class="${rowCls}" data-history-id="${escapeHtml(item.matchId)}">
+                <div class="strip-row">
+                  <strong>${badge} · ${escapeHtml(item.setsText)} (${escapeHtml(item.scoringMode)})</strong>
                   <span class="muted">${escapeHtml(item.durationText)}</span>
                 </div>
                 <div class="muted">
-                  ${escapeHtml(item.dateText)} · MY UE: ${item.myUePoints} (${escapeHtml(item.uePctText)})
+                  ${escapeHtml(item.dateText)} · <span class="ue-label-text">My UEs: ${item.myUePoints} (${escapeHtml(item.uePctText)})</span>
                   ${item.setLines.length ? ` · ${escapeHtml(item.setLines.join(', '))}` : ''}
                 </div>
                 ${
@@ -624,16 +1016,16 @@ function renderHistoryScreen(vm) {
                     ? `<div class="confirm-box">
                          <div><strong>Delete this match from history?</strong> Export first if you want a copy.</div>
                          <div class="controls-row">
-                           <button class="btn btn-sm" data-action="cancel-delete-history">Cancel</button>
-                           <button class="btn btn-sm btn-danger" data-action="confirm-delete-history" data-match-id="${escapeHtml(item.matchId)}">Confirm Delete</button>
+                           <button class="btn" data-action="cancel-delete-history">Cancel</button>
+                           <button class="btn btn-danger" data-action="confirm-delete-history" data-match-id="${escapeHtml(item.matchId)}">Confirm Delete</button>
                          </div>
                        </div>`
                     : `<div class="controls-row">
-                         <button class="btn btn-sm btn-primary" data-action="inspect-history" data-match-id="${escapeHtml(item.matchId)}">Inspect</button>
+                         <button class="btn btn-primary" data-action="inspect-history" data-match-id="${escapeHtml(item.matchId)}">Inspect</button>
                          ${
                            item.canDelete
-                             ? `<button class="btn btn-sm btn-danger" data-action="open-delete-history" data-match-id="${escapeHtml(item.matchId)}">Delete</button>`
-                             : `<button class="btn btn-sm" disabled>${item.isCurrentlyOpenActive ? 'Open on Match Over' : 'Read-Only'}</button>`
+                             ? `<button class="btn btn-danger" data-action="open-delete-history" data-match-id="${escapeHtml(item.matchId)}">Delete</button>`
+                             : `<button class="btn" disabled>${item.isCurrentlyOpenActive ? 'Open on Result' : 'Viewing Only'}</button>`
                          }
                        </div>`
                 }
@@ -643,12 +1035,12 @@ function renderHistoryScreen(vm) {
           .join('');
 
   return `
-    <section class="card" data-screen="HISTORY">
-      <div class="banner-row">
+    <section class="court-panel" data-screen="HISTORY">
+      <div class="strip-row">
         <h1>Match History (${h.count})</h1>
-        <button class="btn btn-sm" data-action="close-history">${escapeHtml(backLabel)}</button>
+        <button class="btn btn-inline" data-action="close-history">${escapeHtml(backLabel)}</button>
       </div>
-      ${h.error ? `<div class="banner banner-err">${escapeHtml(h.error)}</div>` : ''}
+      ${h.error ? `<div class="strip strip-err">${escapeHtml(h.error)}</div>` : ''}
       ${statusNote}
       <div class="controls-stack">${rows}</div>
     </section>
@@ -664,53 +1056,34 @@ function renderHistoryDetailScreen(vm) {
   }
   const s = ana.summary;
   const isManual = s.status === 'FINISHED_MANUAL';
-  const headline = isManual
-    ? 'Finished Manually'
-    : s.winner === 0
-      ? 'Match Won — US'
-      : 'Match Won — THEM';
+  const isWin = !isManual && s.winner === 0;
+  const headline = isManual ? 'Ended Early' : isWin ? 'US Won' : 'THEM Won';
   const setLines = s.setHistory.map(formatSetLine);
   const partialLine = formatPartialScoreLine(s);
   const confirmOpen = h.confirmDeleteMatchId === rec.matchId;
 
   return `
-    <section class="card" data-screen="HISTORY_DETAIL">
-      <div class="banner-row">
-        <button class="btn btn-sm" data-action="back-history-list">← All Matches</button>
-        <button class="btn btn-sm" data-action="close-history">${vm.baseScreen === 'LIVE' ? 'Back to Live' : 'Close'}</button>
+    <section class="court-panel" data-screen="HISTORY_DETAIL">
+      <div class="strip-row">
+        <button class="btn btn-inline" data-action="back-history-list">← All Matches</button>
+        <button class="btn btn-inline" data-action="close-history">${vm.baseScreen === 'LIVE' ? 'Back to Match' : 'Close'}</button>
       </div>
-      ${h.error ? `<div class="banner banner-err" role="alert">${escapeHtml(h.error)}</div>` : ''}
-      <div class="score-header">
-        <span>${escapeHtml(h.inspectedDateText)} · ${escapeHtml(s.scoringMode)}</span>
-        <span>${escapeHtml(formatDuration(s.durationSec))} · #${s.revision}</span>
-      </div>
-      <h1>${escapeHtml(headline)}</h1>
-      <div>
-        <strong>Sets:</strong> ${s.sets[0]}-${s.sets[1]}
-        ${setLines.length ? ` (${escapeHtml(setLines.join(', '))})` : ''}
-      </div>
-      ${partialLine ? `<div class="muted">${escapeHtml(partialLine)}</div>` : ''}
+      ${h.error ? `<div class="strip strip-err" role="alert">${escapeHtml(h.error)}</div>` : ''}
 
-      <div class="stat-grid">
-        <div class="stat-box">
-          <span class="sub-score-label">Us Won (A)</span>
-          <span class="stat-value">${s.counts.ourPoints}</span>
+      <div class="verdict-head">
+        <div class="strip-row">
+          <span class="section-label">${escapeHtml(h.inspectedDateText)} · ${escapeHtml(s.scoringMode)}</span>
+          <span class="muted">${escapeHtml(formatDuration(s.durationSec))} · #${s.revision}</span>
         </div>
-        <div class="stat-box">
-          <span class="sub-score-label">Them Other (B)</span>
-          <span class="stat-value">${s.counts.themOtherPoints}</span>
+        <div class="verdict-title ${isWin ? 'verdict-win' : ''}">${escapeHtml(headline)}</div>
+        <div class="verdict-sets">
+          Sets ${s.sets[0]}-${s.sets[1]}${setLines.length ? ` · ${escapeHtml(setLines.join('  '))}` : ''}
         </div>
-        <div class="stat-box">
-          <span class="sub-score-label">My UEs (E)</span>
-          <span class="stat-value">${s.counts.myUePoints}</span>
-        </div>
-        <div class="stat-box">
-          <span class="sub-score-label">My UEs / Pts Lost</span>
-          <span class="stat-value">${escapeHtml(formatUePercent(s.myUePctOfPointsLost))}</span>
-        </div>
+        ${partialLine ? `<div class="muted">${escapeHtml(partialLine)}</div>` : ''}
       </div>
 
-      ${renderAnalyticsPanel(ana, 'history', rec.matchId)}
+      ${renderPointShareBlock(s.counts)}
+      ${renderAnalyticsPanel(ana, s.scoringMode, 'history', rec.matchId)}
 
       ${
         h.inspectedCanDelete
@@ -718,11 +1091,11 @@ function renderHistoryDetailScreen(vm) {
             ? `<div class="confirm-box">
                  <div><strong>Delete this match from history?</strong> Export first if you want a copy.</div>
                  <div class="controls-row">
-                   <button class="btn btn-sm" data-action="cancel-delete-history">Cancel</button>
-                   <button class="btn btn-sm btn-danger" data-action="confirm-delete-history" data-match-id="${escapeHtml(rec.matchId)}">Confirm Delete</button>
+                   <button class="btn" data-action="cancel-delete-history">Cancel</button>
+                   <button class="btn btn-danger" data-action="confirm-delete-history" data-match-id="${escapeHtml(rec.matchId)}">Confirm Delete</button>
                  </div>
                </div>`
-            : `<button class="btn btn-sm btn-danger" data-action="open-delete-history" data-match-id="${escapeHtml(rec.matchId)}">Delete from History</button>`
+            : `<button class="btn btn-danger" data-action="open-delete-history" data-match-id="${escapeHtml(rec.matchId)}">Delete from History</button>`
           : h.inspectedIsOpenActive
             ? `<div class="muted">Currently open on Match Over — start a New Match before deleting from history.</div>`
             : ''
@@ -733,9 +1106,9 @@ function renderHistoryDetailScreen(vm) {
 
 function renderCorruptScreen(vm) {
   return `
-    <section class="card" data-screen="CORRUPT">
-      <h1>Corrupt Saved Match</h1>
-      <div class="banner banner-err">
+    <section class="court-panel" data-screen="CORRUPT">
+      <h1>Saved Match Needs Recovery</h1>
+      <div class="strip strip-err">
         Saved match data failed validation and was <strong>not</strong> overwritten.
         <div class="muted">${escapeHtml(vm.corruptError || 'Invalid JSON')}</div>
       </div>
@@ -747,14 +1120,14 @@ function renderCorruptScreen(vm) {
           vm.isWriter
             ? vm.ui.confirmClearCorruptOpen
               ? `<div class="confirm-box">
-                   <div><strong>Permanently clear corrupt record?</strong> Make sure you copied the raw payload if needed.</div>
+                   <div><strong>Permanently clear corrupt record?</strong> Copy the raw payload first if needed.</div>
                    <div class="controls-row">
-                     <button class="btn btn-sm" data-action="cancel-clear-corrupt">Cancel</button>
-                     <button class="btn btn-sm btn-danger" data-action="confirm-clear-corrupt">Confirm Clear</button>
+                     <button class="btn" data-action="cancel-clear-corrupt">Cancel</button>
+                     <button class="btn btn-danger" data-action="confirm-clear-corrupt">Confirm Clear</button>
                    </div>
                  </div>`
               : `<button class="btn btn-danger" data-action="open-clear-corrupt">Clear &amp; Start Fresh</button>`
-            : `<div class="muted">Acquire writer lock to clear corrupt storage.</div>`
+            : `<div class="muted">Tap Take over above to clear corrupt storage.</div>`
         }
       </div>
     </section>
@@ -763,16 +1136,16 @@ function renderCorruptScreen(vm) {
 
 function renderReadErrorScreen(vm) {
   return `
-    <section class="card" data-screen="READ_ERROR">
+    <section class="court-panel" data-screen="READ_ERROR">
       <h1>Storage Read Error</h1>
-      <div class="banner banner-err">
-        Could not read saved match from localStorage.
+      <div class="strip strip-err">
+        Could not read saved match from browser storage.
         <div class="muted">${escapeHtml(vm.storageReadError || 'Unknown storage error')}</div>
       </div>
       ${
         vm.isWriter
           ? `<button class="btn btn-primary" data-action="retry-read">Retry Read</button>`
-          : `<button class="btn" data-action="takeover-writer">Take Over Writer</button>`
+          : `<button class="btn btn-primary" data-action="takeover-writer">Take over</button>`
       }
     </section>
   `;
@@ -780,19 +1153,85 @@ function renderReadErrorScreen(vm) {
 
 function renderLoadingScreen() {
   return `
-    <section class="card" data-screen="LOADING">
+    <section class="court-panel" data-screen="LOADING">
       <h1>Loading Match…</h1>
-      <div class="muted">Acquiring writer lock and checking saved state.</div>
+      <div class="muted">Checking saved score and match control lock.</div>
     </section>
   `;
+}
+
+function captureFocusDescriptor(container) {
+  const active = document.activeElement;
+  if (!active || !container.contains(active) || active.tagName !== 'BUTTON') {
+    return null;
+  }
+  const ds = active.dataset;
+  if (!ds || !ds.action) return null;
+  return {
+    action: ds.action,
+    code: ds.code ?? null,
+    mode: ds.mode ?? null,
+    team: ds.team ?? null,
+    matchId: ds.matchId ?? null,
+    source: ds.source ?? null,
+    format: ds.format ?? null,
+  };
+}
+
+function restoreFocusDescriptor(container, desc) {
+  if (!desc) return;
+  for (const btn of container.querySelectorAll('button[data-action]')) {
+    if (btn.disabled) continue;
+    const ds = btn.dataset;
+    if (
+      ds.action === desc.action &&
+      (desc.code === null || ds.code === desc.code) &&
+      (desc.mode === null || ds.mode === desc.mode) &&
+      (desc.team === null || ds.team === desc.team) &&
+      (desc.matchId === null || ds.matchId === desc.matchId) &&
+      (desc.source === null || ds.source === desc.source) &&
+      (desc.format === null || ds.format === desc.format)
+    ) {
+      btn.focus({ preventScroll: true });
+      return;
+    }
+  }
+}
+
+function getSheetFocusables(sheetEl) {
+  return Array.from(
+    sheetEl.querySelectorAll(
+      'button:not([disabled]), summary, textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el.offsetParent !== null || el === document.activeElement);
 }
 
 function boot() {
   const root = document.getElementById('app');
   if (!root) return;
 
+  // Mount stable regions once so LIVE action buttons, open Menu sheets, and inert background survive updates
+  root.innerHTML = `
+    <div class="app-shell" data-region="shell">
+      <div data-region="chrome"></div>
+      <div data-region="screen"></div>
+    </div>
+    <div data-region="sheets"></div>
+  `;
+  const shellEl = root.querySelector('[data-region="shell"]');
+  const chromeEl = root.querySelector('[data-region="chrome"]');
+  const screenEl = root.querySelector('[data-region="screen"]');
+  const sheetsEl = root.querySelector('[data-region="sheets"]');
+
   const wavUrl = createKeepAliveAudioBlobUrl();
   let copyFeedback = '';
+  let prevScreen = null;
+  let prevAwaitingServer = null;
+  let prevMenuOpen = false;
+  let prevGuideOpen = false;
+  let lastOpenerAction = null;
+  let lastChromeHtml = '';
+  let lastGuideHtml = '';
 
   const storage = createGuardedStorage(() => window.localStorage);
   let locks = null;
@@ -820,8 +1259,9 @@ function boot() {
     },
     onUpdate: (vm) => render(vm),
     onDurationTick: (durationText) => {
-      // Update duration text in place so active score buttons & focus are never replaced mid-press
-      const durationEl = root.querySelector('[data-duration-text]');
+      // Update duration text in place (outside any aria-live region) so active score presses,
+      // focus, <details open>, and sheet scroll positions are never disrupted across ticks.
+      const durationEl = screenEl.querySelector('[data-duration-text]');
       if (durationEl && durationText !== null) {
         durationEl.textContent = durationText;
       }
@@ -829,38 +1269,118 @@ function boot() {
   });
 
   function render(vm) {
-    let body = '';
-    if (vm.screen === 'LOADING') body = renderLoadingScreen();
-    else if (vm.screen === 'READ_ERROR') body = renderReadErrorScreen(vm);
-    else if (vm.screen === 'CORRUPT') body = renderCorruptScreen(vm);
-    else if (vm.screen === 'HISTORY') body = renderHistoryScreen(vm);
-    else if (vm.screen === 'HISTORY_DETAIL') body = renderHistoryDetailScreen(vm);
-    else if (vm.screen === 'SETUP') body = renderSetupScreen(vm);
-    else if (vm.screen === 'LIVE') body = renderLiveScreen(vm);
-    else body = renderMatchOverScreen(vm);
-
     const showHistoryBtn =
       vm.screen !== 'LOADING' && vm.screen !== 'HISTORY' && vm.screen !== 'HISTORY_DETAIL';
+    const isBandHealthyLive =
+      vm.isWriter && vm.screen === 'LIVE' && vm.wrist.status === 'ARMED';
 
-    root.innerHTML = `
+    // 1. Update topbar & banners region only when its markup changes (preserving focus inside chrome)
+    const nextChromeHtml = `
       <header class="topbar">
-        <div class="brand">PadelScore</div>
+        <div class="brand">
+          <span class="brand-ball" aria-hidden="true"></span>
+          <span>PadelScore</span>
+        </div>
         <div class="topbar-actions">
           ${
+            isBandHealthyLive
+              ? `<button class="nav-btn nav-btn-ready" data-action="toggle-guide" aria-label="Band controls ready. Open Band guide"><span class="status-dot" aria-hidden="true"></span><span>Band ready</span></button>`
+              : vm.screen !== 'LOADING'
+                ? `<button class="nav-btn" data-action="toggle-guide" aria-label="Band quick guide">? Guide</button>`
+                : ''
+          }
+          ${
             showHistoryBtn
-              ? `<button class="btn btn-sm" data-action="open-history">History (${vm.history.count})</button>`
+              ? `<button class="nav-btn" data-action="open-history">History (${vm.history.count})</button>`
               : ''
           }
-          <div class="pill">${vm.isWriter ? 'WRITER' : 'READ-ONLY'} · ${escapeHtml(vm.screen)}</div>
         </div>
       </header>
       ${renderReadOnlyBanner(vm)}
-      ${renderWristBanner(vm)}
+      ${renderWristRecoveryBanner(vm)}
       ${renderWristEditBanner(vm)}
       ${renderErrorBanners(vm)}
-      ${copyFeedback ? `<div class="banner banner-ok">${escapeHtml(copyFeedback)}</div>` : ''}
-      ${body}
+      ${copyFeedback ? `<div class="strip strip-ok">${escapeHtml(copyFeedback)}</div>` : ''}
     `;
+
+    if (nextChromeHtml !== lastChromeHtml) {
+      const chromeFocus = captureFocusDescriptor(chromeEl);
+      chromeEl.innerHTML = nextChromeHtml;
+      lastChromeHtml = nextChromeHtml;
+      restoreFocusDescriptor(chromeEl, chromeFocus);
+    }
+
+    // 2. Update screen region (in-place for LIVE scoring so buttons never detach & focus never drops)
+    const awaitingServer = Boolean(
+      vm.screen === 'LIVE' && vm.state?.status === 'ACTIVE' && vm.state?.needsInitialServer
+    );
+    const canPatchLiveInPlace =
+      prevScreen === 'LIVE' &&
+      vm.screen === 'LIVE' &&
+      prevAwaitingServer === awaitingServer &&
+      screenEl.querySelector('[data-live-mounted="true"]') !== null;
+
+    if (canPatchLiveInPlace) {
+      updateLiveScreenInPlace(screenEl, vm);
+    } else {
+      const screenFocus = captureFocusDescriptor(screenEl);
+      let body = '';
+      if (vm.screen === 'LOADING') body = renderLoadingScreen();
+      else if (vm.screen === 'READ_ERROR') body = renderReadErrorScreen(vm);
+      else if (vm.screen === 'CORRUPT') body = renderCorruptScreen(vm);
+      else if (vm.screen === 'HISTORY') body = renderHistoryScreen(vm);
+      else if (vm.screen === 'HISTORY_DETAIL') body = renderHistoryDetailScreen(vm);
+      else if (vm.screen === 'SETUP') body = renderSetupScreen(vm);
+      else if (vm.screen === 'LIVE') body = renderLiveScreen(vm);
+      else body = renderMatchOverScreen(vm);
+
+      screenEl.innerHTML = body;
+      restoreFocusDescriptor(screenEl, screenFocus);
+    }
+    prevScreen = vm.screen;
+    prevAwaitingServer = awaitingServer;
+
+    // 3. Update modal sheets region (in-place when Menu stays open so mode toggle keeps focus & scroll)
+    const menuNow = Boolean(vm.ui.menuOpen && vm.isWriter && vm.screen === 'LIVE');
+    const guideNow = Boolean(vm.ui.guideOpen);
+    const sheetOpen = menuNow || guideNow;
+
+    if (menuNow && prevMenuOpen && !guideNow && sheetsEl.querySelector('[data-testid="menu-panel"]')) {
+      updateMenuSheetInPlace(sheetsEl.querySelector('[data-testid="menu-panel"]'), vm);
+    } else if (guideNow && prevGuideOpen && !menuNow && sheetsEl.querySelector('[data-testid="guide-panel"]')) {
+      const nextGuideHtml = renderGuideSheet(vm);
+      if (nextGuideHtml !== lastGuideHtml) {
+        const guideFocus = captureFocusDescriptor(sheetsEl);
+        sheetsEl.innerHTML = nextGuideHtml;
+        lastGuideHtml = nextGuideHtml;
+        restoreFocusDescriptor(sheetsEl, guideFocus);
+      }
+    } else {
+      const nextGuideHtml = renderGuideSheet(vm);
+      lastGuideHtml = nextGuideHtml;
+      sheetsEl.innerHTML = `${renderMenuSheet(vm)}${nextGuideHtml}`;
+    }
+
+    // Make underlying app shell inert while a modal sheet is open (W3C modal dialog pattern)
+    shellEl.inert = sheetOpen;
+    if (sheetOpen) {
+      shellEl.setAttribute('aria-hidden', 'true');
+    } else {
+      shellEl.removeAttribute('aria-hidden');
+    }
+
+    // Move focus into newly opened sheet, or return focus to opener when closed
+    if (menuNow && !prevMenuOpen) {
+      sheetsEl.querySelector('[data-sheet-close="menu"]')?.focus();
+    } else if (guideNow && !prevGuideOpen) {
+      sheetsEl.querySelector('[data-sheet-close="guide"]')?.focus();
+    } else if ((!menuNow && prevMenuOpen) || (!guideNow && prevGuideOpen)) {
+      if (lastOpenerAction) {
+        shellEl.querySelector(`button[data-action="${lastOpenerAction}"]:not([disabled])`)?.focus();
+      }
+    }
+    prevMenuOpen = menuNow;
+    prevGuideOpen = guideNow;
   }
 
   function triggerDownload(source, matchId, format) {
@@ -880,7 +1400,6 @@ function boot() {
       document.body.appendChild(a);
       a.click();
       a.remove();
-      // Keep object URL alive through download initiation on Android Chrome before revoking
       window.setTimeout(() => {
         try {
           URL.revokeObjectURL(url);
@@ -910,6 +1429,13 @@ function boot() {
   }
 
   root.addEventListener('click', (event) => {
+    const backdrop = event.target.classList?.contains('sheet-backdrop') ? event.target : null;
+    if (backdrop) {
+      if (backdrop.dataset.backdrop === 'menu') controller.setMenuOpen(false);
+      if (backdrop.dataset.backdrop === 'guide') controller.setGuideOpen(false);
+      return;
+    }
+
     const btn = event.target.closest('button[data-action]');
     if (!btn || btn.disabled) return;
     copyFeedback = '';
@@ -938,6 +1464,9 @@ function boot() {
     } else if (action === 'retry-archive') {
       controller.retryArchiveCurrentMatch();
     } else if (action === 'open-history') {
+      const vm = controller.getViewModel();
+      if (vm.ui.guideOpen) controller.setGuideOpen(false);
+      if (vm.ui.menuOpen) controller.setMenuOpen(false);
       controller.openHistory();
     } else if (action === 'close-history') {
       controller.closeHistory();
@@ -962,12 +1491,20 @@ function boot() {
     } else if (action === 'undo') {
       controller.undo();
     } else if (action === 'relink-wrist') {
+      controller.setMenuOpen(false);
       controller.relinkWrist();
     } else if (action === 'toggle-menu') {
       const vm = controller.getViewModel();
+      if (!vm.ui.menuOpen) lastOpenerAction = 'toggle-menu';
       controller.setMenuOpen(!vm.ui.menuOpen);
     } else if (action === 'close-menu') {
       controller.setMenuOpen(false);
+    } else if (action === 'toggle-guide') {
+      const vm = controller.getViewModel();
+      if (!vm.ui.guideOpen) lastOpenerAction = 'toggle-guide';
+      controller.setGuideOpen(!vm.ui.guideOpen);
+    } else if (action === 'close-guide') {
+      controller.setGuideOpen(false);
     } else if (action === 'open-opener') {
       controller.setConfirmOpenerOpen(true);
     } else if (action === 'cancel-opener') {
@@ -1007,6 +1544,41 @@ function boot() {
       copyText(JSON.stringify(vm.diagEntries, null, 2), 'diagnostic log');
     } else if (action === 'clear-diag') {
       controller.clearDiagnosticLog();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const vm = controller.getViewModel();
+    const activeSheet = sheetsEl.querySelector('.sheet');
+
+    if (event.key === 'Escape') {
+      if (vm.ui.guideOpen) {
+        controller.setGuideOpen(false);
+      } else if (vm.ui.menuOpen) {
+        controller.setMenuOpen(false);
+      }
+      return;
+    }
+
+    // Contain Tab / Shift+Tab keyboard focus inside the active modal sheet
+    if (event.key === 'Tab' && activeSheet) {
+      const focusables = getSheetFocusables(activeSheet);
+      if (focusables.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const current = document.activeElement;
+      if (event.shiftKey) {
+        if (!activeSheet.contains(current) || current === first) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (!activeSheet.contains(current) || current === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
   });
 

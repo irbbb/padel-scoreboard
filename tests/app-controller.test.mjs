@@ -1205,6 +1205,12 @@ test('S4.2 review regression (P1): writer takeover and page restore reload saved
   const msA = createSimpleMediaSession();
   const msB = createSimpleMediaSession();
 
+  // Seed ONE_TAP_UE so both tabs start in ONE_TAP_UE before Tab A switches to EDIT_MODE
+  storage.setItem(
+    DEFAULTS_STORAGE_KEY,
+    JSON.stringify({ scoringMode: 'AD', initialServer: null, wristCenterMode: 'ONE_TAP_UE' })
+  );
+
   const tabA = createAppController({
     storage,
     locks,
@@ -1222,7 +1228,7 @@ test('S4.2 review regression (P1): writer takeover and page restore reload saved
     now: () => clock,
   });
 
-  // Both tabs start with ONE_TAP_UE saved/default
+  // Both tabs start with ONE_TAP_UE loaded from storage
   await tabA.init();
   await tabB.init();
   assert.equal(tabA.getViewModel().isWriter, true);
@@ -1281,16 +1287,16 @@ test('S4.2 review regression (P1): failed defaults write surfaces session-only w
   });
 
   await ctrl.init();
-  assert.equal(ctrl.getViewModel().wristCenterMode, 'ONE_TAP_UE');
+  assert.equal(ctrl.getViewModel().wristCenterMode, 'EDIT_MODE');
 
   const quotaErr = new Error('QuotaExceededError');
   quotaErr.name = 'QuotaExceededError';
   storage.setFailDefaultsSet(quotaErr);
 
-  const res = ctrl.setWristCenterMode('EDIT_MODE');
+  const res = ctrl.setWristCenterMode('ONE_TAP_UE');
   assert.equal(res.ok, true);
   assert.equal(res.persisted, false);
-  assert.equal(ctrl.getViewModel().wristCenterMode, 'EDIT_MODE');
+  assert.equal(ctrl.getViewModel().wristCenterMode, 'ONE_TAP_UE');
   assert.match(ctrl.getViewModel().actionError, /this session only/i);
 
   await ctrl.handlePageHideOrFreeze();
@@ -1368,4 +1374,135 @@ test('S4.2 review regression (P2): ordinary LIVE revisions stay in FIFO publish 
   assert.ok(written[1].title.includes('*15-15'));
 
   await ctrl.handlePageHideOrFreeze();
+});
+
+test('Phone UI Redesign: EDIT_MODE default migration (fresh, explicit both, missing, invalid, legacy resume) + guideOpen isolation', async () => {
+  const T0 = Date.UTC(2026, 4, 10, 19, 0, 0);
+
+  async function checkCase(label, rawDefaults, { seedActive = false } = {}) {
+    const storage = createMemoryStorage();
+    if (rawDefaults !== undefined) {
+      storage.setRaw(DEFAULTS_STORAGE_KEY, rawDefaults);
+    }
+    if (seedActive) {
+      storage.setRaw(
+        MATCH_STORAGE_KEY,
+        JSON.stringify({
+          schemaVersion: 1,
+          matchId: `m-legacy-${label}`,
+          revision: 2,
+          config: { scoringMode: 'GP', format: 'BO3', decidingSet: 'NORMAL', initialServer: 1 },
+          startTimeMs: T0,
+          finishTimeMs: null,
+          status: 'ACTIVE',
+          nextEventId: 2,
+          events: [{ id: 1, t: T0 + 1000, code: 'A' }],
+        })
+      );
+    }
+
+    const ms = createSimpleMediaSession();
+    const ctrl = createAppController({
+      storage,
+      locks: createSharedMockLocks(),
+      createAudio: createSimpleAudioHarness().createAudio,
+      mediaSession: ms,
+      createMatchId: () => `m-case-${label}`,
+      now: () => T0 + 2000,
+    });
+    await ctrl.init();
+
+    const beforeVm = ctrl.getViewModel();
+    if (!seedActive) {
+      ctrl.setSetupInitialServer(0);
+      await ctrl.startMatch({ linkWrist: true });
+    } else {
+      await ctrl.relinkWrist();
+    }
+
+    // Toggle Band guide open & closed -> zero storage/revision mutation
+    const revBeforeGuide = ctrl.getViewModel().record.revision;
+    ctrl.setGuideOpen(true);
+    assert.equal(ctrl.getViewModel().ui.guideOpen, true);
+    assert.equal(ctrl.getViewModel().ui.menuOpen, false);
+    ctrl.setMenuOpen(true);
+    assert.equal(ctrl.getViewModel().ui.menuOpen, true);
+    assert.equal(ctrl.getViewModel().ui.guideOpen, false);
+    ctrl.setMenuOpen(false);
+    assert.equal(ctrl.getViewModel().record.revision, revBeforeGuide);
+
+    // Press Center once and observe exact outcome
+    ms.handlers.get('pause')();
+    const afterVm = ctrl.getViewModel();
+    await ctrl.handlePageHideOrFreeze();
+    return { beforeVm, afterVm };
+  }
+
+  // 1. Fresh install -> EDIT_MODE default, first Center opens PROMPT without scoring
+  const fresh = await checkCase('fresh', undefined);
+  assert.equal(fresh.beforeVm.wristCenterMode, 'EDIT_MODE');
+  assert.equal(fresh.beforeVm.setupScoringMode, 'AD');
+  assert.equal(fresh.beforeVm.setupInitialServer, null);
+  assert.equal(fresh.afterVm.editState.phase, 'PROMPT');
+  assert.equal(fresh.afterVm.record.events.length, 0);
+
+  // 2. Explicit ONE_TAP_UE -> honored, preserves scoringMode/initialServer, first Center scores E
+  const explicitOneTap = await checkCase(
+    'explicit-1tap',
+    JSON.stringify({ scoringMode: 'GP', initialServer: 1, wristCenterMode: 'ONE_TAP_UE' })
+  );
+  assert.equal(explicitOneTap.beforeVm.wristCenterMode, 'ONE_TAP_UE');
+  assert.equal(explicitOneTap.beforeVm.setupScoringMode, 'GP');
+  assert.equal(explicitOneTap.beforeVm.setupInitialServer, 1);
+  assert.equal(explicitOneTap.afterVm.editState.phase, 'LIVE');
+  assert.deepEqual(explicitOneTap.afterVm.record.events.map((e) => e.code), ['E']);
+
+  // 3. Explicit EDIT_MODE -> honored, preserves scoringMode/initialServer, first Center opens PROMPT
+  const explicitEdit = await checkCase(
+    'explicit-edit',
+    JSON.stringify({ scoringMode: 'GP', initialServer: 0, wristCenterMode: 'EDIT_MODE' })
+  );
+  assert.equal(explicitEdit.beforeVm.wristCenterMode, 'EDIT_MODE');
+  assert.equal(explicitEdit.beforeVm.setupScoringMode, 'GP');
+  assert.equal(explicitEdit.beforeVm.setupInitialServer, 0);
+  assert.equal(explicitEdit.afterVm.editState.phase, 'PROMPT');
+  assert.equal(explicitEdit.afterVm.record.events.length, 0);
+
+  // 4. Missing wristCenterMode -> EDIT_MODE default, preserves scoringMode/initialServer
+  const missingField = await checkCase(
+    'missing',
+    JSON.stringify({ scoringMode: 'GP', initialServer: 1 })
+  );
+  assert.equal(missingField.beforeVm.wristCenterMode, 'EDIT_MODE');
+  assert.equal(missingField.beforeVm.setupScoringMode, 'GP');
+  assert.equal(missingField.beforeVm.setupInitialServer, 1);
+  assert.equal(missingField.afterVm.editState.phase, 'PROMPT');
+
+  // 5. Invalid wristCenterMode -> EDIT_MODE default, preserves scoringMode/initialServer
+  const invalidField = await checkCase(
+    'invalid',
+    JSON.stringify({ scoringMode: 'AD', initialServer: 1, wristCenterMode: 'BOGUS' })
+  );
+  assert.equal(invalidField.beforeVm.wristCenterMode, 'EDIT_MODE');
+  assert.equal(invalidField.beforeVm.setupScoringMode, 'AD');
+  assert.equal(invalidField.beforeVm.setupInitialServer, 1);
+  assert.equal(invalidField.afterVm.editState.phase, 'PROMPT');
+
+  // 6. Legacy active match resume with explicit ONE_TAP_UE vs missing field
+  const legacyOneTap = await checkCase(
+    'legacy-1tap',
+    JSON.stringify({ scoringMode: 'GP', initialServer: 1, wristCenterMode: 'ONE_TAP_UE' }),
+    { seedActive: true }
+  );
+  assert.equal(legacyOneTap.afterVm.wristCenterMode, 'ONE_TAP_UE');
+  assert.deepEqual(legacyOneTap.afterVm.record.events.map((e) => e.code), ['A', 'E']);
+
+  const legacyMissing = await checkCase(
+    'legacy-missing',
+    JSON.stringify({ scoringMode: 'GP', initialServer: 1 }),
+    { seedActive: true }
+  );
+  assert.equal(legacyMissing.afterVm.wristCenterMode, 'EDIT_MODE');
+  assert.equal(legacyMissing.afterVm.editState.phase, 'PROMPT');
+  assert.deepEqual(legacyMissing.afterVm.record.events.map((e) => e.code), ['A']);
 });
