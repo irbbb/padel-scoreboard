@@ -11,8 +11,14 @@ import {
   computePointShare,
   describeBandControls,
   getBandGuideSteps,
+  getCenterModeSummary,
+  isSafeUpdateScreen,
   renderMatchTapeSvg,
+  shouldReloadOnControllerChange,
 } from './uiHelpers.js';
+
+const SW_UPDATE_THROTTLE_MS = 15 * 60 * 1000;
+const SW_UPDATE_TIMEOUT_MS = 8000;
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -44,20 +50,26 @@ function renderBandKeysHtml(keys) {
   `;
 }
 
-function renderBandPanel(vm, { label = 'Band 9 Active' } = {}) {
+function renderBandPanel(vm, { label = 'Band 9 Active', compact = false } = {}) {
   const band = describeBandControls(vm);
   const boxCls =
     band.emphasis === 'resume'
-      ? 'band-box band-box-resume'
+      ? 'band-strip band-strip-resume'
       : band.emphasis === 'edit'
-        ? 'band-box band-box-edit'
-        : 'band-box';
+        ? 'band-strip band-strip-edit'
+        : 'band-strip';
+  const isEditOverlay = band.phase === 'PROMPT' || band.phase === 'AWAITING_LIVE';
+  const showCancelEdit = band.phase === 'PROMPT' && vm.isWriter && vm.screen === 'LIVE';
 
   return `
-    <div class="${boxCls}" data-testid="band-controls-panel">
+    <div class="${boxCls}" data-testid="${isEditOverlay ? 'wrist-edit-banner' : 'band-controls-panel'}">
       <div class="band-header-row">
         <span class="band-cue-title">${escapeHtml(band.headline)}</span>
-        <span class="section-label">${escapeHtml(label)}</span>
+        ${
+          showCancelEdit
+            ? '<button class="btn btn-inline" data-action="cancel-wrist-edit">Cancel Edit</button>'
+            : `<span class="section-label">${escapeHtml(label)}</span>`
+        }
       </div>
       ${
         band.showKeys
@@ -68,8 +80,7 @@ function renderBandPanel(vm, { label = 'Band 9 Active' } = {}) {
              ${renderBandKeysHtml(band.keys)}`
           : ''
       }
-      <div class="muted">${escapeHtml(band.subcue)}</div>
-      ${band.afterWarmupNote ? `<div class="muted">${escapeHtml(band.afterWarmupNote)}</div>` : ''}
+      ${compact ? '' : `<div class="muted">${escapeHtml(band.subcue)}</div>`}
     </div>
   `;
 }
@@ -144,53 +155,6 @@ function renderWristRecoveryBanner(vm) {
   `;
 }
 
-function renderWristEditBanner(vm) {
-  // Only show actionable Band edit/resume instructions when the writer is actively ARMED;
-  // during interruption/disarm, renderWristRecoveryBanner leads with Re-link Band first.
-  if (
-    !vm.isWriter ||
-    vm.screen !== 'LIVE' ||
-    vm.wrist.status !== 'ARMED' ||
-    !vm.editState ||
-    vm.editState.phase === 'LIVE'
-  ) {
-    return '';
-  }
-  const es = vm.editState;
-  if (es.phase === 'PROMPT') {
-    const canUndo = Boolean(es.canUndo && (vm.record?.events?.length ?? 0) > 0);
-    return `
-      <div class="strip strip-warn" data-testid="wrist-edit-banner">
-        <div class="strip-row">
-          <div>
-            <strong>Band in Edit #${es.baseRevision} — choose a correction</strong>
-            <div class="muted">${
-              canUndo
-                ? '< undoes last point · > logs My error (+1 THEM) · || stays open.'
-                : 'Undo is unavailable at 0 points · > logs My error (+1 THEM).'
-            }</div>
-          </div>
-          <button class="btn btn-inline" data-action="cancel-wrist-edit">Cancel Edit</button>
-        </div>
-      </div>
-    `;
-  }
-
-  const reasonText =
-    es.reason === 'UNDO'
-      ? `Last point undone (#${es.baseRevision}).`
-      : es.reason === 'UE'
-        ? `My error saved (+1 THEM, #${es.baseRevision}).`
-        : `Edit closed (#${es.baseRevision}).`;
-
-  return `
-    <div class="strip strip-resume" data-testid="wrist-edit-banner">
-      <div class="resume-headline">Press || on Band to resume scoring</div>
-      <div class="muted">${escapeHtml(reasonText)} Both &lt; and &gt; arrows stay inactive until || is pressed.</div>
-    </div>
-  `;
-}
-
 function renderErrorBanners(vm) {
   const errors = [];
   if (vm.lastSaveError) errors.push(`Save failed (previous score preserved): ${vm.lastSaveError}`);
@@ -209,84 +173,140 @@ function renderErrorBanners(vm) {
     .join('');
 }
 
-function renderSetupScreen(vm) {
-  const adSel = vm.setupScoringMode === 'AD' ? 'btn-selected' : 'btn-choice';
-  const gpSel = vm.setupScoringMode === 'GP' ? 'btn-selected' : 'btn-choice';
-  const editSel = vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : 'btn-choice';
-  const oneTapSel = vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : 'btn-choice';
-  const watchSel = vm.setupInitialServer === null ? 'btn-selected' : 'btn-choice';
-  const usSel = vm.setupInitialServer === 0 ? 'btn-selected' : 'btn-choice';
-  const themSel = vm.setupInitialServer === 1 ? 'btn-selected' : 'btn-choice';
-  const disabled = vm.isWriter ? '' : 'disabled';
+function renderSwUpdateStrip(swState) {
+  if (!swState.ready) return '';
+  return `
+    <div class="strip strip-warn" data-testid="sw-update-banner">
+      <div class="strip-row">
+        <div>
+          <strong>App update ready</strong>
+          ${
+            swState.notice
+              ? `<div class="muted">${escapeHtml(swState.notice)}</div>`
+              : '<div class="muted">Reloads into the new offline version. Match history stays saved.</div>'
+          }
+        </div>
+        <button class="btn btn-inline btn-primary" data-action="apply-sw-update" ${swState.applying ? 'disabled' : ''}>
+          ${swState.applying ? 'Updating…' : 'Update now'}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSetupRadioOption({ name, value, label, checked, disabled }) {
+  const id = `setup-${name}-${value}`;
+  return `
+    <div class="radio-option">
+      <input
+        class="radio-input"
+        type="radio"
+        id="${escapeHtml(id)}"
+        name="${escapeHtml(name)}"
+        value="${escapeHtml(value)}"
+        ${checked ? 'checked' : ''}
+        ${disabled ? 'disabled' : ''}
+      >
+      <label class="radio-label" for="${escapeHtml(id)}">
+        <span class="radio-check" aria-hidden="true">✓</span>
+        <span>${escapeHtml(label)}</span>
+      </label>
+    </div>
+  `;
+}
+
+function renderSetupScreen(vm, swState) {
+  const isDisabled = !vm.isWriter;
+  const serverVal = vm.setupInitialServer === 0 ? '0' : vm.setupInitialServer === 1 ? '1' : 'watch';
 
   return `
-    <section class="court-panel" data-screen="SETUP">
-      <div>
+    <section class="court-section" data-screen="SETUP">
+      <div class="setup-header">
         <h1>${vm.isReplacementSetup ? 'New Match' : 'Court Setup'}</h1>
-        <div class="muted">Best of 3 Sets · Tie-break at 6-6 (to 7 by 2)</div>
+        <span class="muted">Best of 3 · 6-6 TB</span>
       </div>
 
-      <div class="flow-steps" aria-label="How to start">
-        <div class="flow-step">
-          <span class="flow-step-num">01</span>
-          <span>Start match below</span>
+      <fieldset class="radio-fieldset">
+        <legend class="radio-legend">40–40 deuce rule</legend>
+        <div class="radio-group">
+          ${renderSetupRadioOption({
+            name: 'scoring-mode',
+            value: 'AD',
+            label: 'Advantage (AD)',
+            checked: vm.setupScoringMode === 'AD',
+            disabled: isDisabled,
+          })}
+          ${renderSetupRadioOption({
+            name: 'scoring-mode',
+            value: 'GP',
+            label: 'Golden Point (GP)',
+            checked: vm.setupScoringMode === 'GP',
+            disabled: isDisabled,
+          })}
         </div>
-        <div class="flow-step">
-          <span class="flow-step-num">02</span>
-          <span>Check PadelScore in Band Music</span>
-        </div>
-        <div class="flow-step">
-          <span class="flow-step-num">03</span>
-          <span>Lock phone &amp; play</span>
-        </div>
-      </div>
+      </fieldset>
 
-      ${renderBandPanel(vm, { label: 'Band preview' })}
-
-      <div class="setup-group">
-        <span class="section-label">Deuce rule (40-40)</span>
-        <div class="controls-row">
-          <button class="btn ${adSel}" data-action="set-scoring-mode" data-mode="AD" aria-pressed="${vm.setupScoringMode === 'AD'}" ${disabled}>
-            <span>Advantage (AD)</span>
-            <span class="btn-sub">Win by 2 points</span>
-          </button>
-          <button class="btn ${gpSel}" data-action="set-scoring-mode" data-mode="GP" aria-pressed="${vm.setupScoringMode === 'GP'}" ${disabled}>
-            <span>Golden Point (GP)</span>
-            <span class="btn-sub">Next point wins game</span>
-          </button>
+      <fieldset class="radio-fieldset">
+        <legend class="radio-legend">Band middle button (||)</legend>
+        <div class="radio-group">
+          ${renderSetupRadioOption({
+            name: 'wrist-mode',
+            value: 'EDIT_MODE',
+            label: 'Edit point',
+            checked: vm.wristCenterMode === 'EDIT_MODE',
+            disabled: isDisabled,
+          })}
+          ${renderSetupRadioOption({
+            name: 'wrist-mode',
+            value: 'ONE_TAP_UE',
+            label: '1-Tap My Error',
+            checked: vm.wristCenterMode === 'ONE_TAP_UE',
+            disabled: isDisabled,
+          })}
         </div>
-      </div>
+        <p class="mode-hint">${escapeHtml(getCenterModeSummary(vm.wristCenterMode))}</p>
+      </fieldset>
 
-      <div class="setup-group">
-        <span class="section-label">Band center button (||)</span>
-        <div class="controls-row">
-          <button class="btn ${editSel}" data-action="set-wrist-mode" data-mode="EDIT_MODE" aria-pressed="${vm.wristCenterMode === 'EDIT_MODE'}" ${disabled}>
-            <span>Edit point</span>
-            <span class="btn-sub">|| opens &lt; Undo / &gt; MY UE</span>
-          </button>
-          <button class="btn ${oneTapSel}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE" aria-pressed="${vm.wristCenterMode === 'ONE_TAP_UE'}" ${disabled}>
-            <span>1-Tap My Error</span>
-            <span class="btn-sub">|| logs MY UE directly</span>
-          </button>
+      <fieldset class="radio-fieldset">
+        <legend class="radio-legend">First server</legend>
+        <div class="radio-group radio-group-3">
+          ${renderSetupRadioOption({
+            name: 'initial-server',
+            value: 'watch',
+            label: 'Pick on Band',
+            checked: serverVal === 'watch',
+            disabled: isDisabled,
+          })}
+          ${renderSetupRadioOption({
+            name: 'initial-server',
+            value: '0',
+            label: 'US',
+            checked: serverVal === '0',
+            disabled: isDisabled,
+          })}
+          ${renderSetupRadioOption({
+            name: 'initial-server',
+            value: '1',
+            label: 'THEM',
+            checked: serverVal === '1',
+            disabled: isDisabled,
+          })}
         </div>
-      </div>
+      </fieldset>
 
-      <div class="setup-group">
-        <span class="section-label">First server</span>
-        <div class="controls-row-3">
-          <button class="btn ${watchSel}" data-action="set-server" data-team="watch" aria-pressed="${vm.setupInitialServer === null}" ${disabled}>
-            <span>Pick on Band</span>
-            <span class="btn-sub">After warmup</span>
-          </button>
-          <button class="btn ${usSel}" data-action="set-server" data-team="0" aria-pressed="${vm.setupInitialServer === 0}" ${disabled}>US</button>
-          <button class="btn ${themSel}" data-action="set-server" data-team="1" aria-pressed="${vm.setupInitialServer === 1}" ${disabled}>THEM</button>
-        </div>
-      </div>
+      ${renderBandPanel(vm, { label: 'Band preview', compact: true })}
 
       <div class="controls-stack">
-        <button class="btn btn-primary btn-cta" data-action="start-match" ${disabled}>
+        <button class="btn btn-primary btn-cta" data-action="start-match" ${isDisabled ? 'disabled' : ''}>
           Start Match &amp; Link Band
         </button>
+
+        <div class="flow-cue" aria-label="How to start">
+          <span><strong>1</strong> Start match</span>
+          <span><strong>2</strong> Check PadelScore in Band Music</span>
+          <span><strong>3</strong> Lock phone</span>
+        </div>
+
         ${
           vm.archiveBlockedDraft
             ? `<div class="confirm-box" data-testid="archive-blocked-box">
@@ -305,6 +325,7 @@ function renderSetupScreen(vm) {
             ? `<button class="btn" data-action="cancel-replacement">Back to Match Over</button>`
             : ''
         }
+        <div data-sw-update-slot>${renderSwUpdateStrip(swState)}</div>
       </div>
     </section>
   `;
@@ -380,7 +401,7 @@ function renderLiveScreen(vm) {
 
       ${
         awaitingServer
-          ? `<div class="court-panel" data-testid="server-picker">
+          ? `<div class="court-section" data-testid="server-picker">
                <div>
                  <strong>Who serves first?</strong>
                  <div class="muted">Tap &lt; (US) or &gt; (THEM) on your Band after the warmup rally, or choose below. Neither awards a point.</div>
@@ -389,12 +410,12 @@ function renderLiveScreen(vm) {
                  <button class="btn btn-pad" data-action="pick-initial-server" data-team="0" ${disabled}>US SERVES</button>
                  <button class="btn btn-pad btn-pad-them" data-action="pick-initial-server" data-team="1" ${disabled}>THEM SERVES</button>
                </div>
-               <button class="btn" data-action="toggle-menu" ${disabled}>Match Menu</button>
+               <button class="btn btn-row-label" data-action="toggle-menu" ${disabled}><span>Match Menu</span><span aria-hidden="true">▾</span></button>
              </div>`
           : `<div class="controls-stack">
                <div class="controls-row">
-                 <button class="btn btn-pad" data-action="score" data-code="A" ${disabled}>US +1</button>
-                 <button class="btn btn-pad btn-pad-them" data-action="score" data-code="B" ${disabled}>THEM +1</button>
+                 <button class="btn btn-pad" data-action="score" data-code="A" ${disabled}><span>US</span><span class="pad-plus">+1</span></button>
+                 <button class="btn btn-pad btn-pad-them" data-action="score" data-code="B" ${disabled}><span>THEM</span><span class="pad-plus">+1</span></button>
                </div>
 
                <button class="btn btn-ue" data-action="score" data-code="E" ${disabled}>
@@ -405,8 +426,8 @@ function renderLiveScreen(vm) {
                <div data-loveall-slot>${renderLoveAllOpenerSwitchHtml(vm)}</div>
 
                <div class="controls-row">
-                 <button class="btn" data-action="undo" ${undoDisabled}>Undo</button>
-                 <button class="btn" data-action="toggle-menu" ${disabled}>Match Menu</button>
+                 <button class="btn btn-row-label" data-action="undo" ${undoDisabled}><span aria-hidden="true">↺</span><span>Undo</span></button>
+                 <button class="btn btn-row-label" data-action="toggle-menu" ${disabled}><span>Match Menu</span><span aria-hidden="true">▾</span></button>
                </div>
              </div>`
       }
@@ -541,7 +562,15 @@ function renderMenuDiagRowsHtml(vm) {
     .join('');
 }
 
-function renderMenuSheet(vm) {
+function renderMenuUpdateNoteHtml(swState) {
+  if (!swState.ready) return '';
+  return `<div class="strip strip-warn" data-testid="menu-update-note">
+    <strong>Update ready after match</strong>
+    <div class="muted">Finish the match to install the update safely without interrupting Band controls.</div>
+  </div>`;
+}
+
+function renderMenuSheet(vm, swState) {
   if (!vm.ui.menuOpen || !vm.isWriter || vm.screen !== 'LIVE') return '';
   const editSel = vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : 'btn-choice';
   const oneTapSel = vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : 'btn-choice';
@@ -556,7 +585,7 @@ function renderMenuSheet(vm) {
 
         <div class="sheet-body">
           <div class="setup-group">
-            <span class="section-label">Band center button (||)</span>
+            <span class="section-label">Band middle button (||)</span>
             <div class="controls-row">
               <button class="btn ${editSel}" data-action="set-wrist-mode" data-mode="EDIT_MODE" aria-pressed="${vm.wristCenterMode === 'EDIT_MODE'}">
                 <span>Edit point</span>
@@ -567,6 +596,7 @@ function renderMenuSheet(vm) {
                 <span class="btn-sub">Direct MY UE</span>
               </button>
             </div>
+            <p class="mode-hint" data-menu-mode-hint>${escapeHtml(getCenterModeSummary(vm.wristCenterMode))}</p>
           </div>
 
           <div class="controls-row">
@@ -580,6 +610,7 @@ function renderMenuSheet(vm) {
 
           <div data-menu-opener-slot>${renderMenuOpenerSlotHtml(vm)}</div>
           <div data-menu-finish-slot>${renderMenuFinishSlotHtml(vm)}</div>
+          <div data-menu-update-slot>${renderMenuUpdateNoteHtml(swState)}</div>
 
           <details class="advanced-details">
             <summary>
@@ -604,13 +635,16 @@ function renderMenuSheet(vm) {
   `;
 }
 
-function updateMenuSheetInPlace(sheetEl, vm) {
+function updateMenuSheetInPlace(sheetEl, vm, swState) {
   for (const btn of sheetEl.querySelectorAll('button[data-action="set-wrist-mode"]')) {
     const selected = btn.dataset.mode === vm.wristCenterMode;
     btn.classList.toggle('btn-selected', selected);
     btn.classList.toggle('btn-choice', !selected);
     btn.setAttribute('aria-pressed', String(selected));
   }
+
+  const modeHint = sheetEl.querySelector('[data-menu-mode-hint]');
+  if (modeHint) modeHint.textContent = getCenterModeSummary(vm.wristCenterMode);
 
   const openerSlot = sheetEl.querySelector('[data-menu-opener-slot]');
   if (openerSlot) {
@@ -635,6 +669,15 @@ function updateMenuSheetInPlace(sheetEl, vm) {
       if (hadFocus) {
         finishSlot.querySelector('button')?.focus({ preventScroll: true });
       }
+    }
+  }
+
+  const updateSlot = sheetEl.querySelector('[data-menu-update-slot]');
+  if (updateSlot) {
+    const nextHtml = renderMenuUpdateNoteHtml(swState);
+    if (updateSlot.dataset.lastHtml !== nextHtml) {
+      updateSlot.innerHTML = nextHtml;
+      updateSlot.dataset.lastHtml = nextHtml;
     }
   }
 
@@ -666,7 +709,7 @@ function renderGuideSheet(vm) {
         </div>
 
         <div class="sheet-body">
-          <div class="muted">Active center mode: <strong>${escapeHtml(modeLabel)}</strong>. Start a native Band Workout, then swipe to Music Controls.</div>
+          <div class="muted">Active middle button: <strong>${escapeHtml(modeLabel)}</strong>. Start a native Band Workout, then swipe to Music Controls.</div>
 
           ${steps
             .map(
@@ -717,7 +760,7 @@ function renderPointShareBlock(counts) {
     <div class="controls-stack">
       <div class="strip-row">
         <span class="section-label">Point breakdown (${share.totalPoints} played)</span>
-        <span class="ue-label-text">My UEs: ${escapeHtml(ueLostText)} of points lost</span>
+        <span class="ue-label-text">My UEs: ${escapeHtml(ueLostText)} of ${share.pointsLost} lost</span>
       </div>
       ${
         share.totalPoints > 0
@@ -728,18 +771,18 @@ function renderPointShareBlock(counts) {
              </div>`
           : ''
       }
-      <div class="share-totals">
-        <div class="share-stat">
+      <div class="share-inline">
+        <div class="share-metric">
           <span class="section-label">US points</span>
-          <span class="share-stat-val">${share.usPoints}</span>
+          <span class="share-metric-val">${share.usPoints}</span>
         </div>
-        <div class="share-stat">
+        <div class="share-metric">
           <span class="section-label">Other THEM</span>
-          <span class="share-stat-val">${share.themOtherPoints}</span>
+          <span class="share-metric-val">${share.themOtherPoints}</span>
         </div>
-        <div class="share-stat">
+        <div class="share-metric">
           <span class="section-label">My UEs</span>
-          <span class="share-stat-val ue-label-text">${share.myUePoints}</span>
+          <span class="share-metric-val ue-label-text">${share.myUePoints}</span>
         </div>
       </div>
     </div>
@@ -819,23 +862,23 @@ function renderAnalyticsPanel(analytics, scoringMode, exportSource, exportMatchI
         </div>
       </div>
 
-      <div class="insight-grid">
-        <div class="insight-cell">
+      <div class="insight-list">
+        <div class="insight-row">
           <span class="section-label">Clutch My UEs</span>
           <span class="insight-val">${clutch.clutchUeTotal}</span>
           <span class="muted">${escapeHtml(formatUePercent(clutch.clutchUePctOfPointsLost))} of ${clutch.clutchPointsLost} lost</span>
         </div>
-        <div class="insight-cell">
+        <div class="insight-row">
           <span class="section-label">Service Hold</span>
-          <span class="insight-val" style="font-size:18px;">${escapeHtml(holdText)}</span>
+          <span class="insight-val insight-val-compact">${escapeHtml(holdText)}</span>
           <span class="muted">Completed non-TB games</span>
         </div>
-        <div class="insight-cell">
+        <div class="insight-row">
           <span class="section-label">Serving My UEs</span>
           <span class="insight-val">${serveReturn.serving.myUePoints}</span>
           <span class="muted">${escapeHtml(formatUePercent(serveReturn.serving.uePctOfPointsLost))} of ${serveReturn.serving.pointsLost} lost</span>
         </div>
-        <div class="insight-cell">
+        <div class="insight-row">
           <span class="section-label">Returning My UEs</span>
           <span class="insight-val">${serveReturn.returning.myUePoints}</span>
           <span class="muted">${escapeHtml(formatUePercent(serveReturn.returning.uePctOfPointsLost))} of ${serveReturn.returning.pointsLost} lost</span>
@@ -911,7 +954,7 @@ function renderAnalyticsPanel(analytics, scoringMode, exportSource, exportMatchI
   `;
 }
 
-function renderMatchOverScreen(vm) {
+function renderMatchOverScreen(vm, swState) {
   const s = vm.state;
   const isManual = s.status === 'FINISHED_MANUAL';
   const isWin = !isManual && s.winner === 0;
@@ -919,7 +962,7 @@ function renderMatchOverScreen(vm) {
   const partialLine = formatPartialScoreLine(s);
 
   return `
-    <section class="court-panel" data-screen="MATCH_OVER">
+    <section class="court-section" data-screen="MATCH_OVER">
       <div class="verdict-head">
         <div class="strip-row">
           <span class="section-label">${isManual ? 'Ended early' : 'Final'} · ${escapeHtml(s.scoringMode)}</span>
@@ -950,7 +993,7 @@ function renderMatchOverScreen(vm) {
       <div class="controls-stack">
         ${
           !isManual && vm.canUndo
-            ? `<button class="btn" data-action="undo">Undo last point</button>`
+            ? `<button class="btn btn-row-label" data-action="undo"><span aria-hidden="true">↺</span><span>Undo last point</span></button>`
             : ''
         }
         ${
@@ -966,11 +1009,12 @@ function renderMatchOverScreen(vm) {
       </div>
 
       ${renderAnalyticsPanel(vm.matchOverAnalytics, s.scoringMode, 'current')}
+      <div data-sw-update-slot>${renderSwUpdateStrip(swState)}</div>
     </section>
   `;
 }
 
-function renderHistoryScreen(vm) {
+function renderHistoryScreen(vm, swState) {
   const h = vm.history;
   const backLabel =
     vm.baseScreen === 'LIVE'
@@ -1035,7 +1079,7 @@ function renderHistoryScreen(vm) {
           .join('');
 
   return `
-    <section class="court-panel" data-screen="HISTORY">
+    <section class="court-section" data-screen="HISTORY">
       <div class="strip-row">
         <h1>Match History (${h.count})</h1>
         <button class="btn btn-inline" data-action="close-history">${escapeHtml(backLabel)}</button>
@@ -1043,16 +1087,17 @@ function renderHistoryScreen(vm) {
       ${h.error ? `<div class="strip strip-err">${escapeHtml(h.error)}</div>` : ''}
       ${statusNote}
       <div class="controls-stack">${rows}</div>
+      <div data-sw-update-slot>${vm.baseScreen !== 'LIVE' ? renderSwUpdateStrip(swState) : ''}</div>
     </section>
   `;
 }
 
-function renderHistoryDetailScreen(vm) {
+function renderHistoryDetailScreen(vm, swState) {
   const h = vm.history;
   const rec = h.inspectedRecord;
   const ana = h.inspectedAnalytics;
   if (!rec || !ana) {
-    return renderHistoryScreen(vm);
+    return renderHistoryScreen(vm, swState);
   }
   const s = ana.summary;
   const isManual = s.status === 'FINISHED_MANUAL';
@@ -1063,7 +1108,7 @@ function renderHistoryDetailScreen(vm) {
   const confirmOpen = h.confirmDeleteMatchId === rec.matchId;
 
   return `
-    <section class="court-panel" data-screen="HISTORY_DETAIL">
+    <section class="court-section" data-screen="HISTORY_DETAIL">
       <div class="strip-row">
         <button class="btn btn-inline" data-action="back-history-list">← All Matches</button>
         <button class="btn btn-inline" data-action="close-history">${vm.baseScreen === 'LIVE' ? 'Back to Match' : 'Close'}</button>
@@ -1100,13 +1145,14 @@ function renderHistoryDetailScreen(vm) {
             ? `<div class="muted">Currently open on Match Over — start a New Match before deleting from history.</div>`
             : ''
       }
+      <div data-sw-update-slot>${vm.baseScreen !== 'LIVE' ? renderSwUpdateStrip(swState) : ''}</div>
     </section>
   `;
 }
 
 function renderCorruptScreen(vm) {
   return `
-    <section class="court-panel" data-screen="CORRUPT">
+    <section class="court-section" data-screen="CORRUPT">
       <h1>Saved Match Needs Recovery</h1>
       <div class="strip strip-err">
         Saved match data failed validation and was <strong>not</strong> overwritten.
@@ -1136,7 +1182,7 @@ function renderCorruptScreen(vm) {
 
 function renderReadErrorScreen(vm) {
   return `
-    <section class="court-panel" data-screen="READ_ERROR">
+    <section class="court-section" data-screen="READ_ERROR">
       <h1>Storage Read Error</h1>
       <div class="strip strip-err">
         Could not read saved match from browser storage.
@@ -1153,7 +1199,7 @@ function renderReadErrorScreen(vm) {
 
 function renderLoadingScreen() {
   return `
-    <section class="court-panel" data-screen="LOADING">
+    <section class="court-section" data-screen="LOADING">
       <h1>Loading Match…</h1>
       <div class="muted">Checking saved score and match control lock.</div>
     </section>
@@ -1162,24 +1208,42 @@ function renderLoadingScreen() {
 
 function captureFocusDescriptor(container) {
   const active = document.activeElement;
-  if (!active || !container.contains(active) || active.tagName !== 'BUTTON') {
-    return null;
+  if (!active || !container.contains(active)) return null;
+
+  if (active.tagName === 'INPUT' && active.type === 'radio') {
+    return {
+      kind: 'radio',
+      name: active.name,
+      value: active.value,
+    };
   }
-  const ds = active.dataset;
-  if (!ds || !ds.action) return null;
-  return {
-    action: ds.action,
-    code: ds.code ?? null,
-    mode: ds.mode ?? null,
-    team: ds.team ?? null,
-    matchId: ds.matchId ?? null,
-    source: ds.source ?? null,
-    format: ds.format ?? null,
-  };
+  if (active.tagName === 'BUTTON' && active.dataset?.action) {
+    const ds = active.dataset;
+    return {
+      kind: 'button',
+      action: ds.action,
+      code: ds.code ?? null,
+      mode: ds.mode ?? null,
+      team: ds.team ?? null,
+      matchId: ds.matchId ?? null,
+      source: ds.source ?? null,
+      format: ds.format ?? null,
+    };
+  }
+  return null;
 }
 
 function restoreFocusDescriptor(container, desc) {
   if (!desc) return;
+  if (desc.kind === 'radio') {
+    for (const input of container.querySelectorAll('input[type="radio"]')) {
+      if (!input.disabled && input.name === desc.name && input.value === desc.value) {
+        input.focus({ preventScroll: true });
+        return;
+      }
+    }
+    return;
+  }
   for (const btn of container.querySelectorAll('button[data-action]')) {
     if (btn.disabled) continue;
     const ds = btn.dataset;
@@ -1198,19 +1262,33 @@ function restoreFocusDescriptor(container, desc) {
   }
 }
 
+function isInsideClosedDetails(el, stopAt) {
+  let cur = el.parentElement;
+  while (cur && cur !== stopAt) {
+    if (cur.tagName === 'DETAILS' && !cur.open) {
+      const isDirectSummary = el.tagName === 'SUMMARY' && el.parentElement === cur;
+      if (!isDirectSummary) return true;
+    }
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
 function getSheetFocusables(sheetEl) {
   return Array.from(
     sheetEl.querySelectorAll(
       'button:not([disabled]), summary, textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
     )
-  ).filter((el) => el.offsetParent !== null || el === document.activeElement);
+  ).filter((el) => {
+    if (isInsideClosedDetails(el, sheetEl)) return false;
+    return el.offsetParent !== null || el === document.activeElement;
+  });
 }
 
 function boot() {
   const root = document.getElementById('app');
   if (!root) return;
 
-  // Mount stable regions once so LIVE action buttons, open Menu sheets, and inert background survive updates
   root.innerHTML = `
     <div class="app-shell" data-region="shell">
       <div data-region="chrome"></div>
@@ -1232,6 +1310,18 @@ function boot() {
   let lastOpenerAction = null;
   let lastChromeHtml = '';
   let lastGuideHtml = '';
+
+  // Service Worker update state (multi-window-safe, never reloads mid-match)
+  let swRegistration = null;
+  let requestedUpdateWorker = null;
+  let updateAttemptId = 0;
+  let updateAttemptCleanup = null;
+  let lastSwUpdateCheckMs = 0;
+  const swState = {
+    ready: false,
+    applying: false,
+    notice: null,
+  };
 
   const storage = createGuardedStorage(() => window.localStorage);
   let locks = null;
@@ -1259,8 +1349,6 @@ function boot() {
     },
     onUpdate: (vm) => render(vm),
     onDurationTick: (durationText) => {
-      // Update duration text in place (outside any aria-live region) so active score presses,
-      // focus, <details open>, and sheet scroll positions are never disrupted across ticks.
       const durationEl = screenEl.querySelector('[data-duration-text]');
       if (durationEl && durationText !== null) {
         durationEl.textContent = durationText;
@@ -1268,13 +1356,167 @@ function boot() {
     },
   });
 
+  function clearActiveUpdateAttempt() {
+    updateAttemptId += 1;
+    if (typeof updateAttemptCleanup === 'function') {
+      const fn = updateAttemptCleanup;
+      updateAttemptCleanup = null;
+      fn();
+    }
+  }
+
+  function patchSwUpdateSlots(vm = controller.getViewModel()) {
+    // Patch dedicated update slots in place so open <details>, scroll, and focus never reset
+    const screenSlot = screenEl.querySelector('[data-sw-update-slot]');
+    if (screenSlot) {
+      const nextHtml =
+        vm.baseScreen !== 'LIVE' && isSafeUpdateScreen(vm.screen)
+          ? renderSwUpdateStrip(swState)
+          : '';
+      if (screenSlot.dataset.lastHtml !== nextHtml) {
+        const slotFocus = captureFocusDescriptor(screenSlot);
+        screenSlot.innerHTML = nextHtml;
+        screenSlot.dataset.lastHtml = nextHtml;
+        restoreFocusDescriptor(screenSlot, slotFocus);
+      }
+    }
+
+    const menuSlot = sheetsEl.querySelector('[data-menu-update-slot]');
+    if (menuSlot) {
+      const nextHtml = renderMenuUpdateNoteHtml(swState);
+      if (menuSlot.dataset.lastHtml !== nextHtml) {
+        menuSlot.innerHTML = nextHtml;
+        menuSlot.dataset.lastHtml = nextHtml;
+      }
+    }
+  }
+
+  function syncSwReadyFromRegistration(reg) {
+    if (!reg || !('serviceWorker' in navigator)) return;
+    const waiting = reg.waiting;
+    const hasWaiting = Boolean(waiting && navigator.serviceWorker.controller);
+
+    // If the worker we requested became redundant or disappeared while applying, release lock & allow retry
+    if (swState.applying && requestedUpdateWorker && requestedUpdateWorker !== waiting) {
+      clearActiveUpdateAttempt();
+      requestedUpdateWorker = null;
+      swState.applying = false;
+      swState.notice = hasWaiting
+        ? 'A newer update arrived. Tap Update now to retry.'
+        : null;
+      swState.ready = hasWaiting;
+      patchSwUpdateSlots();
+      return;
+    }
+
+    if (hasWaiting !== swState.ready) {
+      swState.ready = hasWaiting;
+      if (!hasWaiting) {
+        clearActiveUpdateAttempt();
+        requestedUpdateWorker = null;
+        swState.applying = false;
+        swState.notice = null;
+      }
+      patchSwUpdateSlots();
+    }
+  }
+
+  function watchInstallingWorker(worker, reg) {
+    if (!worker) return;
+    worker.addEventListener('statechange', () => {
+      if (worker.state === 'installed' || worker.state === 'activated' || worker.state === 'redundant') {
+        syncSwReadyFromRegistration(reg);
+      }
+    });
+  }
+
+  function applySwUpdate() {
+    if (!swRegistration || swState.applying) return;
+    const vm = controller.getViewModel();
+    if (!isSafeUpdateScreen(vm.screen) || vm.baseScreen === 'LIVE') {
+      return;
+    }
+
+    const waiting = swRegistration.waiting;
+    if (!waiting || waiting.state === 'redundant') {
+      swState.ready = false;
+      swState.notice = null;
+      patchSwUpdateSlots(vm);
+      return;
+    }
+
+    clearActiveUpdateAttempt();
+    const myAttemptId = updateAttemptId;
+    requestedUpdateWorker = waiting;
+    swState.applying = true;
+    swState.notice = null;
+    patchSwUpdateSlots(vm);
+
+    const channel = new MessageChannel();
+    let timerId = null;
+
+    const failAttempt = (noticeMsg) => {
+      if (myAttemptId !== updateAttemptId) return;
+      clearActiveUpdateAttempt();
+      requestedUpdateWorker = null;
+      swState.applying = false;
+      const latestWaiting = swRegistration?.waiting ?? null;
+      swState.ready = Boolean(latestWaiting && navigator.serviceWorker.controller);
+      swState.notice = swState.ready ? noticeMsg : null;
+      patchSwUpdateSlots();
+    };
+
+    const onWaitingStateChange = () => {
+      if (myAttemptId !== updateAttemptId) return;
+      if (waiting.state === 'redundant') {
+        failAttempt('Update worker was replaced before activating. Tap Update now to retry.');
+      }
+    };
+
+    waiting.addEventListener('statechange', onWaitingStateChange);
+    timerId = window.setTimeout(() => {
+      failAttempt('Update timed out. Close other tabs or tap Update now to retry.');
+    }, SW_UPDATE_TIMEOUT_MS);
+
+    updateAttemptCleanup = () => {
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+        timerId = null;
+      }
+      waiting.removeEventListener('statechange', onWaitingStateChange);
+      try {
+        channel.port1.onmessage = null;
+        channel.port1.close();
+      } catch {
+        // Ignore port close errors
+      }
+    };
+
+    channel.port1.onmessage = (msgEvent) => {
+      if (myAttemptId !== updateAttemptId) return;
+      const res = msgEvent.data;
+      if (!res || res.ok !== true) {
+        failAttempt(
+          res?.reason === 'other_window_open'
+            ? 'Close other PadelScore tabs first, then tap Update again.'
+            : 'Could not apply update yet. Close other tabs and try again.'
+        );
+      }
+    };
+
+    try {
+      waiting.postMessage({ type: 'SKIP_WAITING' }, [channel.port2]);
+    } catch {
+      failAttempt('Could not contact update worker. Close and reopen the app to update.');
+    }
+  }
+
   function render(vm) {
     const showHistoryBtn =
       vm.screen !== 'LOADING' && vm.screen !== 'HISTORY' && vm.screen !== 'HISTORY_DETAIL';
     const isBandHealthyLive =
       vm.isWriter && vm.screen === 'LIVE' && vm.wrist.status === 'ARMED';
 
-    // 1. Update topbar & banners region only when its markup changes (preserving focus inside chrome)
     const nextChromeHtml = `
       <header class="topbar">
         <div class="brand">
@@ -1298,7 +1540,6 @@ function boot() {
       </header>
       ${renderReadOnlyBanner(vm)}
       ${renderWristRecoveryBanner(vm)}
-      ${renderWristEditBanner(vm)}
       ${renderErrorBanners(vm)}
       ${copyFeedback ? `<div class="strip strip-ok">${escapeHtml(copyFeedback)}</div>` : ''}
     `;
@@ -1310,7 +1551,6 @@ function boot() {
       restoreFocusDescriptor(chromeEl, chromeFocus);
     }
 
-    // 2. Update screen region (in-place for LIVE scoring so buttons never detach & focus never drops)
     const awaitingServer = Boolean(
       vm.screen === 'LIVE' && vm.state?.status === 'ACTIVE' && vm.state?.needsInitialServer
     );
@@ -1328,11 +1568,11 @@ function boot() {
       if (vm.screen === 'LOADING') body = renderLoadingScreen();
       else if (vm.screen === 'READ_ERROR') body = renderReadErrorScreen(vm);
       else if (vm.screen === 'CORRUPT') body = renderCorruptScreen(vm);
-      else if (vm.screen === 'HISTORY') body = renderHistoryScreen(vm);
-      else if (vm.screen === 'HISTORY_DETAIL') body = renderHistoryDetailScreen(vm);
-      else if (vm.screen === 'SETUP') body = renderSetupScreen(vm);
+      else if (vm.screen === 'HISTORY') body = renderHistoryScreen(vm, swState);
+      else if (vm.screen === 'HISTORY_DETAIL') body = renderHistoryDetailScreen(vm, swState);
+      else if (vm.screen === 'SETUP') body = renderSetupScreen(vm, swState);
       else if (vm.screen === 'LIVE') body = renderLiveScreen(vm);
-      else body = renderMatchOverScreen(vm);
+      else body = renderMatchOverScreen(vm, swState);
 
       screenEl.innerHTML = body;
       restoreFocusDescriptor(screenEl, screenFocus);
@@ -1340,13 +1580,12 @@ function boot() {
     prevScreen = vm.screen;
     prevAwaitingServer = awaitingServer;
 
-    // 3. Update modal sheets region (in-place when Menu stays open so mode toggle keeps focus & scroll)
     const menuNow = Boolean(vm.ui.menuOpen && vm.isWriter && vm.screen === 'LIVE');
     const guideNow = Boolean(vm.ui.guideOpen);
     const sheetOpen = menuNow || guideNow;
 
     if (menuNow && prevMenuOpen && !guideNow && sheetsEl.querySelector('[data-testid="menu-panel"]')) {
-      updateMenuSheetInPlace(sheetsEl.querySelector('[data-testid="menu-panel"]'), vm);
+      updateMenuSheetInPlace(sheetsEl.querySelector('[data-testid="menu-panel"]'), vm, swState);
     } else if (guideNow && prevGuideOpen && !menuNow && sheetsEl.querySelector('[data-testid="guide-panel"]')) {
       const nextGuideHtml = renderGuideSheet(vm);
       if (nextGuideHtml !== lastGuideHtml) {
@@ -1358,10 +1597,9 @@ function boot() {
     } else {
       const nextGuideHtml = renderGuideSheet(vm);
       lastGuideHtml = nextGuideHtml;
-      sheetsEl.innerHTML = `${renderMenuSheet(vm)}${nextGuideHtml}`;
+      sheetsEl.innerHTML = `${renderMenuSheet(vm, swState)}${nextGuideHtml}`;
     }
 
-    // Make underlying app shell inert while a modal sheet is open (W3C modal dialog pattern)
     shellEl.inert = sheetOpen;
     if (sheetOpen) {
       shellEl.setAttribute('aria-hidden', 'true');
@@ -1369,7 +1607,6 @@ function boot() {
       shellEl.removeAttribute('aria-hidden');
     }
 
-    // Move focus into newly opened sheet, or return focus to opener when closed
     if (menuNow && !prevMenuOpen) {
       sheetsEl.querySelector('[data-sheet-close="menu"]')?.focus();
     } else if (guideNow && !prevGuideOpen) {
@@ -1428,6 +1665,21 @@ function boot() {
     render(controller.getViewModel());
   }
 
+  // Native Setup radio groups
+  root.addEventListener('change', (event) => {
+    const input = event.target;
+    if (!input || input.tagName !== 'INPUT' || input.type !== 'radio' || input.disabled) return;
+    copyFeedback = '';
+    if (input.name === 'scoring-mode') {
+      controller.setSetupScoringMode(input.value);
+    } else if (input.name === 'wrist-mode') {
+      controller.setWristCenterMode(input.value);
+    } else if (input.name === 'initial-server') {
+      const team = input.value === '0' ? 0 : input.value === '1' ? 1 : null;
+      controller.setSetupInitialServer(team);
+    }
+  });
+
   root.addEventListener('click', (event) => {
     const backdrop = event.target.classList?.contains('sheet-backdrop') ? event.target : null;
     if (backdrop) {
@@ -1463,6 +1715,8 @@ function boot() {
       controller.cancelReplacementSetup();
     } else if (action === 'retry-archive') {
       controller.retryArchiveCurrentMatch();
+    } else if (action === 'apply-sw-update') {
+      applySwUpdate();
     } else if (action === 'open-history') {
       const vm = controller.getViewModel();
       if (vm.ui.guideOpen) controller.setGuideOpen(false);
@@ -1560,7 +1814,6 @@ function boot() {
       return;
     }
 
-    // Contain Tab / Shift+Tab keyboard focus inside the active modal sheet
     if (event.key === 'Tab' && activeSheet) {
       const focusables = getSheetFocusables(activeSheet);
       if (focusables.length === 0) {
@@ -1582,17 +1835,22 @@ function boot() {
     }
   });
 
-  // Cross-tab read-only refresh on match key OR full storage clear (key === null)
   window.addEventListener('storage', (e) => {
     controller.handleStorageEvent(e.key);
   });
 
-  // Screen lock keeps bridge ARMED; return refreshes displayed durationSec
   document.addEventListener('visibilitychange', () => {
     controller.handleVisibilityChange(document.visibilityState);
+    // Throttled update check on foreground return for long-lived open tabs
+    if (document.visibilityState === 'visible' && swRegistration) {
+      const nowMs = Date.now();
+      if (nowMs - lastSwUpdateCheckMs >= SW_UPDATE_THROTTLE_MS) {
+        lastSwUpdateCheckMs = nowMs;
+        swRegistration.update().catch(() => {});
+      }
+    }
   });
 
-  // Idempotent teardown on pagehide / Page Lifecycle freeze
   window.addEventListener('pagehide', () => {
     controller.handlePageHideOrFreeze('pagehide');
   });
@@ -1600,7 +1858,6 @@ function boot() {
     controller.handlePageHideOrFreeze('freeze');
   });
 
-  // BFCache restore / unfreeze: recheck lock & reread storage, starting disarmed
   window.addEventListener('pageshow', (e) => {
     if (e.persisted) {
       controller.handlePageShowOrResume();
@@ -1610,7 +1867,6 @@ function boot() {
     controller.handlePageShowOrResume();
   });
 
-  // Live durationSec tick while visible (zero commits, zero revision bumps, zero wrist publishes)
   window.setInterval(() => {
     if (document.visibilityState === 'visible') {
       controller.tickDisplay();
@@ -1619,9 +1875,45 @@ function boot() {
 
   controller.init();
 
-  // Register offline Service Worker without forcing mid-match reloads
+  // Register offline Service Worker with multi-window-safe user-triggered update discovery
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      const vm = controller.getViewModel();
+      const shouldReload =
+        vm.baseScreen !== 'LIVE' &&
+        shouldReloadOnControllerChange({
+          requestedWorker: requestedUpdateWorker,
+          newController: navigator.serviceWorker.controller,
+          screen: vm.screen,
+        });
+
+      clearActiveUpdateAttempt();
+      requestedUpdateWorker = null;
+      swState.ready = false;
+      swState.applying = false;
+      swState.notice = null;
+
+      if (shouldReload) {
+        window.location.reload();
+      } else {
+        patchSwUpdateSlots(vm);
+      }
+    });
+
+    navigator.serviceWorker
+      .register('./sw.js', { scope: './' })
+      .then((reg) => {
+        swRegistration = reg;
+        lastSwUpdateCheckMs = Date.now();
+        reg.addEventListener('updatefound', () => {
+          watchInstallingWorker(reg.installing, reg);
+        });
+        if (reg.installing) {
+          watchInstallingWorker(reg.installing, reg);
+        }
+        syncSwReadyFromRegistration(reg);
+      })
+      .catch(() => {});
   }
 }
 

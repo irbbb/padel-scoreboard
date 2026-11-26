@@ -7,7 +7,10 @@ import {
   computePointShare,
   describeBandControls,
   getBandGuideSteps,
+  getCenterModeSummary,
+  isSafeUpdateScreen,
   renderMatchTapeSvg,
+  shouldReloadOnControllerChange,
   TAPE_BIN_COUNT,
   TAPE_VIEWBOX_HEIGHT,
   TAPE_VIEWBOX_WIDTH,
@@ -270,4 +273,42 @@ test('Match Tape handles 0 points, 1 E point, post-undo sequence, mid-tiebreak m
   assert.ok(denseSvg.includes('35 My unforced errors'));
   assert.ok(denseSvg.includes('<polygon'));
   assert.ok(!denseSvg.includes('NaN'));
+});
+
+test('getCenterModeSummary and Service Worker update reload guards protect active matches and mismatched controllers', () => {
+  assert.equal(getCenterModeSummary('EDIT_MODE'), 'Press || to choose Undo or My Error.');
+  assert.equal(getCenterModeSummary(undefined), 'Press || to choose Undo or My Error.');
+  assert.equal(
+    getCenterModeSummary('ONE_TAP_UE'),
+    'Press || to record my unforced error and give THEM a point.'
+  );
+
+  assert.equal(isSafeUpdateScreen('SETUP'), true);
+  assert.equal(isSafeUpdateScreen('MATCH_OVER'), true);
+  assert.equal(isSafeUpdateScreen('HISTORY'), true);
+  assert.equal(isSafeUpdateScreen('HISTORY_DETAIL'), true);
+  assert.equal(isSafeUpdateScreen('LIVE'), false);
+  assert.equal(isSafeUpdateScreen('LOADING'), false);
+  assert.equal(isSafeUpdateScreen('CORRUPT'), false);
+
+  const workerV2 = { scriptURL: 'sw.js?v2' };
+  const workerV3 = { scriptURL: 'sw.js?v3' };
+
+  // Only reloads when exact requested worker became controller on a safe screen
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: workerV2, newController: workerV2, screen: 'SETUP' }),
+    true
+  );
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: workerV2, newController: workerV2, screen: 'LIVE' }),
+    false
+  );
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: workerV2, newController: workerV3, screen: 'SETUP' }),
+    false
+  );
+  assert.equal(
+    shouldReloadOnControllerChange({ requestedWorker: null, newController: workerV2, screen: 'SETUP' }),
+    false
+  );
 });

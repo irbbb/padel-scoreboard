@@ -102,6 +102,44 @@ self.addEventListener('install', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (!event.data || event.data.type !== 'SKIP_WAITING') return;
+  const reply = (payload) => {
+    try {
+      if (event.ports && event.ports[0]) {
+        event.ports[0].postMessage(payload);
+      } else if (event.source && typeof event.source.postMessage === 'function') {
+        event.source.postMessage(payload);
+      }
+    } catch {
+      // Ignore reply port errors
+    }
+  };
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // Waiting worker does not yet control existing v1 tabs, so we MUST inspect uncontrolled
+      // windows filtered to this registration scope and only proceed if requester is the sole window.
+      const scope = self.registration.scope;
+      const scopeNoSlash = scope.endsWith('/') ? scope.slice(0, -1) : scope;
+      const inScope = clientList.filter(
+        (c) => typeof c.url === 'string' && (c.url === scopeNoSlash || c.url.startsWith(scope))
+      );
+      const requesterId = event.source && typeof event.source.id === 'string' ? event.source.id : null;
+      const hasOtherWindow =
+        inScope.length > 1 ||
+        (requesterId !== null && inScope.some((c) => c.id !== requesterId));
+
+      if (hasOtherWindow) {
+        reply({ ok: false, reason: 'other_window_open' });
+        return undefined;
+      }
+      reply({ ok: true });
+      return self.skipWaiting();
+    })
+  );
+});
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches

@@ -271,6 +271,28 @@ export function describeBandControls(vm) {
   });
 }
 
+export const SAFE_UPDATE_SCREENS = Object.freeze(
+  new Set(['SETUP', 'MATCH_OVER', 'HISTORY', 'HISTORY_DETAIL'])
+);
+
+export function getCenterModeSummary(wristCenterMode) {
+  const mode = normalizeWristCenterMode(wristCenterMode);
+  if (mode === WRIST_CENTER_MODES.ONE_TAP_UE) {
+    return 'Press || to record my unforced error and give THEM a point.';
+  }
+  return 'Press || to choose Undo or My Error.';
+}
+
+export function isSafeUpdateScreen(screen) {
+  return SAFE_UPDATE_SCREENS.has(screen);
+}
+
+export function shouldReloadOnControllerChange({ requestedWorker, newController, screen }) {
+  if (!requestedWorker || !newController) return false;
+  if (requestedWorker !== newController) return false;
+  return isSafeUpdateScreen(screen);
+}
+
 /**
  * Returns visual steps for the Band 9 Active Quick Guide sheet.
  * Shows the warmup server-picker step ONLY while the Band displays WHO SERVES? (or Setup is set to Pick on Band).
