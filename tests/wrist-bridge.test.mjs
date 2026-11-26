@@ -410,7 +410,7 @@ test('Re-link from ARMED detaches/pauses old element (even with queued HTML paus
   assert.equal(audio2.paused, false);
   assert.equal(rig.bridge.getStatus().status, 'ARMED');
   assert.equal(rig.store.getSnapshot().record.revision, 1); // Revision preserved!
-  assert.equal(rig.mediaSession.metadata.title, '*0-0 0-0 #1');
+  assert.equal(rig.mediaSession.metadata.title, 'US SERVES #1');
   await rig.store.releaseWriter();
 });
 

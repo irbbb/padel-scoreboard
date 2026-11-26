@@ -1,12 +1,14 @@
 import { formatPointLabel } from './format.js';
 
 export const SCHEMA_VERSION = 1;
+export const SUPPORTED_SCORING_MODES = Object.freeze(['AD', 'GP']);
 export const SUPPORTED_P0_CONFIG = Object.freeze({
-  scoringMode: 'GP',
+  scoringMode: 'AD',
   format: 'BO3',
   decidingSet: 'NORMAL',
 });
 
+const VALID_SCORING_MODES = new Set(SUPPORTED_SCORING_MODES);
 const VALID_CODES = new Set(['A', 'B', 'E']);
 const VALID_STATUSES = new Set(['ACTIVE', 'WON', 'FINISHED_MANUAL']);
 
@@ -36,6 +38,12 @@ function assertTeamIndex(value, name) {
   }
 }
 
+function assertInitialServer(value, name) {
+  if (value !== 0 && value !== 1 && value !== null) {
+    throw new Error(`Invalid ${name}: expected 0 (Us), 1 (Them), or null (pending)`);
+  }
+}
+
 function validateConfig(config, { allowDefaults = false } = {}) {
   if (!config || typeof config !== 'object') {
     throw new Error('Invalid config: expected object');
@@ -51,8 +59,8 @@ function validateConfig(config, { allowDefaults = false } = {}) {
     ? (config.decidingSet ?? SUPPORTED_P0_CONFIG.decidingSet)
     : config.decidingSet;
 
-  if (scoringMode !== SUPPORTED_P0_CONFIG.scoringMode) {
-    throw new Error(`Unsupported P0 scoringMode "${scoringMode}" (only "GP" is supported in P0)`);
+  if (!VALID_SCORING_MODES.has(scoringMode)) {
+    throw new Error(`Unsupported P0 scoringMode "${scoringMode}" (supported: "AD", "GP")`);
   }
   if (format !== SUPPORTED_P0_CONFIG.format) {
     throw new Error(`Unsupported P0 format "${format}" (only "BO3" is supported in P0)`);
@@ -60,7 +68,7 @@ function validateConfig(config, { allowDefaults = false } = {}) {
   if (decidingSet !== SUPPORTED_P0_CONFIG.decidingSet) {
     throw new Error(`Unsupported P0 decidingSet "${decidingSet}" (only "NORMAL" is supported in P0)`);
   }
-  assertTeamIndex(config.initialServer, 'config.initialServer');
+  assertInitialServer(config.initialServer, 'config.initialServer');
 
   return Object.freeze({
     scoringMode,
@@ -130,6 +138,9 @@ export function reducePoint(state, event, eventIndex, config) {
     throw new Error(
       `Invalid event log: event id=${event.id} at index ${eventIndex} occurs after match was already won at index ${state.winningEventIndex}`
     );
+  }
+  if (state.server !== 0 && state.server !== 1) {
+    throw new Error(`Invalid state.server (${state.server}): first serving team must be chosen before scoring`);
   }
   if (!VALID_CODES.has(event.code)) {
     throw new Error(`Invalid event code "${event.code}" at index ${eventIndex}`);
@@ -217,12 +228,26 @@ export function reducePoint(state, event, eventIndex, config) {
       }
     }
   } else {
-    // Ordinary Golden Point game (40-40 next point wins)
+    // Ordinary game: Advantage (AD) or Golden Point (GP)
     const pTeam = points[team];
     const pOpp = points[opp];
-    const wonGame = pTeam === 3 && pOpp <= 3;
+    let wonGame = false;
+    let resetToDeuce = false;
 
-    if (!wonGame) {
+    if (config.scoringMode === 'GP') {
+      wonGame = pTeam === 3 && pOpp <= 3;
+    } else {
+      // AD: 40-0/15/30 wins, AD-40 wins, trailing team winning at AD resets to 40-40 Deuce
+      if ((pTeam === 3 && pOpp < 3) || (pTeam === 4 && pOpp === 3)) {
+        wonGame = true;
+      } else if (pTeam === 3 && pOpp === 4) {
+        resetToDeuce = true;
+      }
+    }
+
+    if (resetToDeuce) {
+      points[opp] = 3;
+    } else if (!wonGame) {
       points[team] += 1;
     } else {
       points = [0, 0];
@@ -300,6 +325,10 @@ function replayAndValidate(record) {
 
   // Persisted/imported records must explicitly specify all config fields (no silent defaults)
   const config = validateConfig(record.config, { allowDefaults: false });
+  if (config.initialServer === null && record.events.length > 0) {
+    throw new Error('Invalid match record: initialServer cannot be null once points have been recorded');
+  }
+
   let state = createInitialReplayState(config);
   let prevId = 0;
 
@@ -404,6 +433,8 @@ export function deriveMatchState(record, nowMs = record?.startTimeMs ?? 0) {
   return {
     matchId: record.matchId,
     revision: record.revision,
+    scoringMode: record.config.scoringMode,
+    needsInitialServer: record.config.initialServer === null,
     status: record.status,
     winner: record.status === 'WON' ? state.winner : null,
     sets: state.sets,
@@ -432,6 +463,9 @@ export function deriveMatchState(record, nowMs = record?.startTimeMs ?? 0) {
 export function addPoint(record, code, nowMs) {
   if (record.status !== 'ACTIVE') {
     throw new Error(`Cannot add point when match status is "${record.status}"`);
+  }
+  if (record.config?.initialServer === null) {
+    throw new Error('Cannot add point before first serving team is selected');
   }
   if (!VALID_CODES.has(code)) {
     throw new Error(`Invalid event code "${code}": expected "A", "B", or "E"`);

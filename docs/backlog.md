@@ -13,7 +13,7 @@ On court, the player runs a **native Xiaomi Band 9 Active Workout** (recording r
 
 ### Delivery Order (Field-Test Driven)
 1. **`P0` · Preserve Baseline & Offline Shell (`Epic 0`):** Commit the Band 9 Active pivot cleanly (keeping `vela-s0.1-archive`), verify the lean `node:22-alpine` + `esbuild` Docker build from a clean checkout, deploy GitHub Pages HTTPS + Service Worker, and prove cold offline start with sample display strings on the band.
-2. **`P0` · Build One Recoverable Match (`Epic 1` + `Epic 2`):** Ship the primary format played (`BO3` + `GP`) first with frozen rules, first-server selection/correction, UTC event log, independent monotonic `revision`, phone Undo, `Finish Now` / `Resume`, Web-Lock single-writer `localStorage` persistence, and `MediaSession` bridge (`Prev` = `US`, `Next` = `THEM`, single Center = `MY UE`, `#rev` marker, `Re-link Wrist`).
+2. **`P0` · Build One Recoverable Match (`Epic 1` + `Epic 2`):** Ship the primary amateur format played (`BO3` + `AD` Advantage default, with `GP` Golden Point also selectable) with frozen rules, watch-selectable first server after the 4-touch warmup rally (`initialServer: null`), UTC event log, independent monotonic `revision`, phone Undo, `Finish Now` / `Resume`, Web-Lock single-writer `localStorage` persistence, and `MediaSession` bridge (`Prev` = `US`, `Next` = `THEM`, single Center = `MY UE`, `#rev` marker, `Re-link Wrist`). Odd-game `SWAP` alerts are omitted by default (amateur matches switch ends only at set breaks).
 3. **`P0` · Qualify the Wrist & Run Two Field Tests (`Epic 3`):** Measure exact `title`/`artist` truncation vs scrolling and tap-to-visible-revision delay, then pass a **90-minute court match** (against an independent tally) and a **disruption test** (call, WhatsApp voice note, headset, BLE range, Chrome kill → zero phantom points). If one-tap Center causes any phantom point, `S4.2` (`EDIT #<rev>`) becomes a conditional `P0` prerequisite before re-running `S3.2`.
 4. **Post-Qualification (`Epic 4`):** Complete remaining match formats (`AD`, `BO3+STB`, `1SET`, `FREE`), safe 2-step Reset, and (if not already triggered by `S3.2`) optional `EDIT #<rev>` wrist-Undo mode.
 5. **Post-Match Value (`Epic 5` `P1` / `P2`):** Match history, built-in UE analytics & `CSV`/`JSON` download (`P1`), and native Workout HR timestamp join gated on a real export (`P2`).
@@ -94,10 +94,10 @@ On court, the player runs a **native Xiaomi Band 9 Active Workout** (recording r
 - **Verify:** `node --test`.
 
 #### `S1.3` · `P0` · Two-Line Wrist Display Formatter (`title` + `artist`)
-*Depends on `S1.2` (uses provisional width budgets—e.g. `title <= 20 chars`, `artist <= 20 chars`—until `S3.1` tunes them against measured Band 9 Active limits; `AD` tested as a display fixture until `S4.1`).*
-- [ ] Implement pure `formatWristDisplay(state, revision)` returning `{ title, artist }` prioritizing must-fit first-glance fields: live points + current games + serve `*` + `#rev` on `title`; sets + `UE` + `SWAP` on `artist`.
+*Depends on `S1.2` (uses provisional width budgets—e.g. `title <= 20 chars`, `artist <= 20 chars`—until `S3.1` tunes them against measured Band 9 Active limits).*
+- [ ] Implement pure `formatWristDisplay(state, revision)` returning `{ title, artist }` prioritizing must-fit first-glance fields: live points + current games + serve `*` + `#rev` on `title` (plus `WHO SERVES?` / `US SERVES` / `THEM SERVES` at warmup & love-all); sets + `UE` on `artist` (odd-game `SWAP` omitted by default for amateur play).
 - [ ] Ensure repeated scores (e.g. `40-40` Deuce) always differ visibly via `#rev`.
-- **Verify:** `node --test` covering `0-0`, `40-40`, `AD` fixture, `TB 10-10`, `SWAP`, 3-digit `UE`, and `FINISHED_MANUAL`.
+- **Verify:** `node --test` covering `WHO SERVES?`, love-all `US/THEM SERVES`, `40-40`, `AD-40`, `TB 10-10`, 3-digit `UE`, and `FINISHED_MANUAL`.
 
 #### `S1.4` · `P0` · Web-Lock Single Writer, Commit Pipeline & Corrupt-Storage Recovery
 *Depends on `S1.2`.*
@@ -139,8 +139,8 @@ On court, the player runs a **native Xiaomi Band 9 Active Workout** (recording r
 
 #### `S3.1` · `P0` · Qualify the Wrist Display & Input Behavior
 *Depends on `S2.3`.*
-- [ ] Agree upfront on qualification thresholds before testing: **must-fit first-glance fields** (live points + current games + serve `*` + `#rev` on `title`; sets + `UE` + `SWAP` on `artist`) and **acceptable tap-to-visible-revision delay** (target: `<= 2.5s` median, `<= 5.0s` worst).
-- [ ] Test real formatted scores (`30-15`, `AD` fixture, `TB 10-10`, `#42`, `SWAP`, `UE 100`) on the physical Band 9 Active; record **first-glance truncation** and **scrolling** separately for `title` and `artist` in `docs/hardware-notes.md` and tune `S1.3` if needed.
+- [ ] Agree upfront on qualification thresholds before testing: **must-fit first-glance fields** (live points + current games + serve `*` + `#rev` on `title`, plus `WHO SERVES?` / `US SERVES` / `THEM SERVES` at warmup & love-all; sets + `UE` on `artist`, with odd-game `SWAP` omitted by default) and **acceptable tap-to-visible-revision delay** (target: `<= 2.5s` median, `<= 5.0s` worst).
+- [ ] Test real formatted scores (`WHO SERVES?`, `US SERVES`, `30-15`, `AD-40`, `TB 10-10`, `#42`, `UE:100`) on the physical Band 9 Active; record **first-glance truncation** and **scrolling** separately for `title` and `artist` in `docs/hardware-notes.md` and tune `S1.3` if needed.
 - [ ] Verify Band 9 Active repeated center taps (`pause` vs `play`), rapid updates, and leaving/reopening Music during a native Workout.
 - [ ] Measure tap-to-visible-revision delay with a **second observer or phone video** (page logs alone cannot measure wrist render time) and log results in `docs/hardware-notes.md`.
 - **Verify:** Physical Band 9 Active + diagnostic log + observer/video measurement.

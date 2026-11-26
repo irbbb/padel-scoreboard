@@ -55,6 +55,7 @@ function buildCompactTbToken(points, server, includeServeMarker) {
  * Tries candidate layouts in priority order. Each candidate specifies:
  * - titleTokens (all must fit on title)
  * - revOnTitle (boolean: whether revTok is already inside titleTokens)
+ * - artistRequiredToken (optional indivisible token required on artist)
  * - artistOptionalTokens (placed on artist; if !revOnTitle, revTok is REQUIRED first on artist)
  * Guarantees whole tokens (never slices numbers) and guarantees revTok is ALWAYS displayed.
  */
@@ -63,12 +64,22 @@ function resolveLayout(candidates, revTok, maxTitleLen, maxArtistLen) {
     const title = joinTokens(cand.titleTokens);
     if (title.length === 0 || title.length > maxTitleLen) continue;
 
+    const optional = cand.artistOptionalTokens ?? [];
+
     if (cand.revOnTitle) {
-      const artist = fitTokens(cand.artistOptionalTokens, maxArtistLen);
+      if (cand.artistRequiredToken) {
+        const artist = fitWithRequiredFirst(cand.artistRequiredToken, optional, maxArtistLen);
+        if (artist !== null) {
+          return { title, artist };
+        }
+        continue;
+      }
+      const artist = fitTokens(optional, maxArtistLen);
       return { title, artist };
     }
 
-    const artist = fitWithRequiredFirst(revTok, cand.artistOptionalTokens, maxArtistLen);
+    const requiredArtist = cand.artistRequiredToken ? joinTokens([revTok, cand.artistRequiredToken]) : revTok;
+    const artist = fitWithRequiredFirst(requiredArtist, optional, maxArtistLen);
     if (artist !== null) {
       return { title, artist };
     }
@@ -84,14 +95,17 @@ function resolveLayout(candidates, revTok, maxTitleLen, maxArtistLen) {
  * Guarantees the whole revision token (#rev) is always rendered on either title or artist
  * (throws if neither line budget can hold the minimum truthful score + #rev).
  */
-export function formatWristDisplay(state, { maxTitleLen = 20, maxArtistLen = 20 } = {}) {
+export function formatWristDisplay(
+  state,
+  { maxTitleLen = 20, maxArtistLen = 20, showSwap = false } = {}
+) {
   assertBudget(maxTitleLen, 'maxTitleLen');
   assertBudget(maxArtistLen, 'maxArtistLen');
 
   const revTok = `#${state.revision}`;
   const setsTok = `S${state.sets[0]}-${state.sets[1]}`;
   const ueTok = `UE:${state.counts.myUePoints}`;
-  const swapTok = state.changeEndsAlert ? 'SWP' : '';
+  const swapTok = showSwap && state.changeEndsAlert ? 'SWP' : '';
 
   if (state.status === 'WON') {
     const outcome = state.winner === 0 ? 'WIN' : 'LOSS';
@@ -138,6 +152,31 @@ export function formatWristDisplay(state, { maxTitleLen = 20, maxArtistLen = 20 
         revOnTitle: false,
         artistOptionalTokens: [gamesTok, setsTok, ueTok],
       });
+      // Preserve live point score on artist before falling back to games alone (e.g. END AD-40 at 8/20)
+      candidates.push({
+        titleTokens: ['END', gamesTok, revTok],
+        revOnTitle: true,
+        artistRequiredToken: ptsTok,
+        artistOptionalTokens: [setsTok, ueTok],
+      });
+      candidates.push({
+        titleTokens: ['END', gamesTok],
+        revOnTitle: false,
+        artistRequiredToken: ptsTok,
+        artistOptionalTokens: [setsTok, ueTok],
+      });
+      candidates.push({
+        titleTokens: ['END', revTok],
+        revOnTitle: true,
+        artistRequiredToken: ptsTok,
+        artistOptionalTokens: [gamesTok, setsTok, ueTok],
+      });
+      candidates.push({
+        titleTokens: ['END'],
+        revOnTitle: false,
+        artistRequiredToken: ptsTok,
+        artistOptionalTokens: [gamesTok, setsTok, ueTok],
+      });
     }
 
     if (state.inTieBreak) {
@@ -166,6 +205,54 @@ export function formatWristDisplay(state, { maxTitleLen = 20, maxArtistLen = 20 
     });
 
     return resolveLayout(candidates, revTok, maxTitleLen, maxArtistLen);
+  }
+
+  // ACTIVE match awaiting first server selection from watch (after 4-touch warmup point)
+  if (state.server === null) {
+    return resolveLayout(
+      [
+        { titleTokens: ['WHO SERVES?', revTok], revOnTitle: true, artistRequiredToken: '< US   THEM >' },
+        { titleTokens: ['SERVE?', revTok], revOnTitle: true, artistRequiredToken: '< US THEM >' },
+        { titleTokens: ['SERVE?', revTok], revOnTitle: true, artistRequiredToken: '<US THEM>' },
+        { titleTokens: ['<US THEM>', revTok], revOnTitle: true, artistOptionalTokens: ['SERVE?'] },
+        { titleTokens: ['<US THEM>'], revOnTitle: false, artistOptionalTokens: ['SERVE?'] },
+        { titleTokens: ['SERVE?'], revOnTitle: false, artistRequiredToken: '<US THEM>' },
+      ],
+      revTok,
+      maxTitleLen,
+      maxArtistLen
+    );
+  }
+
+  // Love-all confirmation right after server selection (0 points played): unmistakably confirms who serves
+  const isLoveAllStart =
+    !state.inTieBreak &&
+    state.sets[0] === 0 &&
+    state.sets[1] === 0 &&
+    state.games[0] === 0 &&
+    state.games[1] === 0 &&
+    state.points[0] === 0 &&
+    state.points[1] === 0 &&
+    (state.counts?.totalPoints ?? 0) === 0;
+
+  if (isLoveAllStart) {
+    const serveHeadline = state.server === 0 ? 'US SERVES' : 'THEM SERVES';
+    const serveShort = state.server === 0 ? 'US SRV' : 'THM SRV';
+    return resolveLayout(
+      [
+        { titleTokens: [serveHeadline, revTok], revOnTitle: true, artistOptionalTokens: ['0-0', '0-0', setsTok] },
+        { titleTokens: [serveHeadline], revOnTitle: false, artistOptionalTokens: ['0-0', '0-0', setsTok] },
+        { titleTokens: [serveShort, revTok], revOnTitle: true, artistOptionalTokens: ['0-0', setsTok] },
+        { titleTokens: [serveShort], revOnTitle: false, artistOptionalTokens: ['0-0', setsTok] },
+        { titleTokens: ['0-0', revTok], revOnTitle: true, artistRequiredToken: serveHeadline, artistOptionalTokens: [setsTok] },
+        { titleTokens: ['0-0', revTok], revOnTitle: true, artistRequiredToken: serveShort, artistOptionalTokens: [setsTok] },
+        { titleTokens: ['0-0'], revOnTitle: false, artistRequiredToken: serveHeadline, artistOptionalTokens: [setsTok] },
+        { titleTokens: ['0-0'], revOnTitle: false, artistRequiredToken: serveShort, artistOptionalTokens: [setsTok] },
+      ],
+      revTok,
+      maxTitleLen,
+      maxArtistLen
+    );
   }
 
   // ACTIVE match (always our-team-first order)

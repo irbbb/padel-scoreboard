@@ -197,6 +197,7 @@ test('Match Over flows: Finish Now -> Resume (disarmed), WON -> Undo (disarmed),
   await ctrl.init();
   await ctrl.startMatch({ linkWrist: true });
   assert.equal(ctrl.getViewModel().wrist.status, 'ARMED');
+  await ctrl.selectInitialServer(0);
 
   clock += 30000;
   await ctrl.scorePoint('E');
@@ -291,6 +292,7 @@ test('Read-only second tab views MATCH_OVER & CORRUPT, refreshes on storage clea
   });
 
   await writer.init();
+  writer.setSetupInitialServer(0);
   await writer.startMatch({ linkWrist: false });
   await writer.scorePoint('A');
   await writer.finishNow();
@@ -564,4 +566,108 @@ test('Regression P2: malformed diagnostic timestamp formats safely without throw
   assert.equal(formatDiagTime(-1e20), '--:--:--');
   assert.equal(formatDiagTime(Number.NaN), '--:--:--');
   assert.equal(formatDiagTime(Date.UTC(2026, 0, 1, 14, 5, 9)), '14:05:09');
+});
+
+test('Amateur rules: defaults migration, watch server pick, ignored Center, stale phone pick, save-fail diag, and AD/GP selection', async () => {
+  // 1. Legacy defaults `{ initialServer: 0 }` migrate cleanly to `{ scoringMode: "AD", initialServer: 0 }`
+  const legacyStorage = createMemoryStorage();
+  legacyStorage.setItem(DEFAULTS_STORAGE_KEY, JSON.stringify({ initialServer: 0 }));
+  const legacyCtrl = createAppController({
+    storage: legacyStorage,
+    locks: createSharedMockLocks(),
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-legacy',
+    now: () => 1000,
+  });
+  await legacyCtrl.init();
+  assert.equal(legacyCtrl.getViewModel().setupScoringMode, 'AD');
+  assert.equal(legacyCtrl.getViewModel().setupInitialServer, 0);
+  await legacyCtrl.handlePageHideOrFreeze();
+
+  // 2. Fresh defaults = AD + Pick on watch (null)
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const audioH = createSimpleAudioHarness();
+  const ms = createSimpleMediaSession();
+  let clock = 2000;
+  let idSeq = 0;
+
+  const ctrl = createAppController({
+    storage,
+    locks,
+    createAudio: audioH.createAudio,
+    mediaSession: ms,
+    createMatchId: () => `m-am-${++idSeq}`,
+    now: () => clock,
+  });
+
+  await ctrl.init();
+  assert.equal(ctrl.getViewModel().setupScoringMode, 'AD');
+  assert.equal(ctrl.getViewModel().setupInitialServer, null);
+
+  await ctrl.startMatch({ linkWrist: true });
+  let vm = ctrl.getViewModel();
+  assert.equal(vm.screen, 'LIVE');
+  assert.equal(vm.state.needsInitialServer, true);
+  assert.equal(vm.state.server, null);
+  assert.equal(vm.wrist.status, 'ARMED');
+  assert.equal(ms.metadata.title, 'WHO SERVES? #1');
+  assert.equal(ms.metadata.artist, '< US   THEM >');
+
+  // Center tap (MY UE) while awaiting server is safely ignored (no write, audio stays playing, diag logs ignored_awaiting_server)
+  ms.handlers.get('pause')();
+  await Promise.resolve();
+  assert.equal(ctrl.getViewModel().record.revision, 1);
+  assert.equal(ctrl.getViewModel().state.needsInitialServer, true);
+  assert.equal(audioH.created.at(-1).paused, false);
+  assert.ok(ctrl._diagLog.readAll().entries.some((e) => e.action === 'ignored_awaiting_server'));
+
+  // Quota error during watch pick logs wrist_save_failed_* (NOT saved wrist_previoustrack)
+  storage.setFailNextSet(new Error('QuotaExceeded'));
+  ms.handlers.get('previoustrack')();
+  await Promise.resolve();
+  assert.equal(ctrl.getViewModel().record.revision, 1);
+  assert.equal(ctrl.getViewModel().state.needsInitialServer, true);
+  assert.ok(ctrl._diagLog.readAll().entries.some((e) => e.action === 'wrist_save_failed_previoustrack'));
+
+  // Watch Prev (US) picks US as opener -> rev 2, 0 events, band shows US SERVES #2
+  ms.handlers.get('previoustrack')();
+  await Promise.resolve();
+  await Promise.resolve();
+  vm = ctrl.getViewModel();
+  assert.equal(vm.record.revision, 2);
+  assert.equal(vm.record.events.length, 0);
+  assert.equal(vm.state.server, 0);
+  assert.equal(vm.state.needsInitialServer, false);
+  assert.equal(ms.metadata.title, 'US SERVES #2');
+  assert.equal(ms.metadata.artist, '0-0 0-0 S0-0');
+
+  // Next-match preference stays "Pick on watch" (null) even after picking US for this match
+  assert.equal(JSON.parse(storage.getItem(DEFAULTS_STORAGE_KEY)).initialServer, null);
+
+  // Stale phone pick action is a harmless no-op once opener is set
+  const staleRes = await ctrl.selectInitialServer(1);
+  assert.equal(staleRes.changed, false);
+  assert.equal(ctrl.getViewModel().state.server, 0);
+  assert.equal(ctrl.getViewModel().record.revision, 2);
+
+  // Scoring now works in AD mode -> band transitions to *15-0 0-0 #3
+  ms.handlers.get('previoustrack')();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(ctrl.getViewModel().record.revision, 3);
+  assert.equal(ms.metadata.title, '*15-0 0-0 #3');
+
+  // Finish and open replacement draft -> verify GP selectable and preserved
+  await ctrl.finishNow();
+  assert.equal(ctrl.openReplacementSetup(), true);
+  ctrl.setSetupScoringMode('GP');
+  ctrl.setSetupInitialServer(1);
+  await ctrl.startMatch({ linkWrist: false });
+  assert.equal(ctrl.getViewModel().record.config.scoringMode, 'GP');
+  assert.equal(ctrl.getViewModel().record.config.initialServer, 1);
+  assert.equal(JSON.parse(storage.getItem(DEFAULTS_STORAGE_KEY)).scoringMode, 'GP');
+
+  await ctrl.handlePageHideOrFreeze();
 });

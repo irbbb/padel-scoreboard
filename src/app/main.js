@@ -83,6 +83,9 @@ function renderErrorBanners(vm) {
 }
 
 function renderSetupScreen(vm) {
+  const adSel = vm.setupScoringMode === 'AD' ? 'btn-selected' : '';
+  const gpSel = vm.setupScoringMode === 'GP' ? 'btn-selected' : '';
+  const watchSel = vm.setupInitialServer === null ? 'btn-selected' : '';
   const usSel = vm.setupInitialServer === 0 ? 'btn-selected' : '';
   const themSel = vm.setupInitialServer === 1 ? 'btn-selected' : '';
   const disabled = vm.isWriter ? '' : 'disabled';
@@ -91,13 +94,23 @@ function renderSetupScreen(vm) {
     <section class="card" data-screen="SETUP">
       <h1>${vm.isReplacementSetup ? 'New Match' : 'Start Padel Match'}</h1>
       <div class="muted">
-        Locked P0 rules: <strong>Best of 3 Sets · Golden Point (40-40) · 6-6 Tie-break (to 7 by 2)</strong>
+        Format: <strong>Best of 3 Sets · 6-6 Tie-break (to 7 by 2)</strong>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:8px;"><strong>Scoring at 40-40</strong></div>
+        <div class="controls-row">
+          <button class="btn ${adSel}" data-action="set-scoring-mode" data-mode="AD" ${disabled}>Advantage (AD)</button>
+          <button class="btn ${gpSel}" data-action="set-scoring-mode" data-mode="GP" ${disabled}>Golden Point (GP)</button>
+        </div>
       </div>
       <div>
         <div class="muted" style="margin-bottom:8px;"><strong>Who serves first?</strong></div>
-        <div class="controls-row">
-          <button class="btn ${usSel}" data-action="set-server" data-team="0" ${disabled}>US Serve</button>
-          <button class="btn ${themSel}" data-action="set-server" data-team="1" ${disabled}>THEM Serve</button>
+        <div class="controls-stack">
+          <button class="btn ${watchSel}" data-action="set-server" data-team="watch" ${disabled}>Pick on watch (after warmup point)</button>
+          <div class="controls-row">
+            <button class="btn ${usSel}" data-action="set-server" data-team="0" ${disabled}>US Serve</button>
+            <button class="btn ${themSel}" data-action="set-server" data-team="1" ${disabled}>THEM Serve</button>
+          </div>
         </div>
       </div>
       <div class="controls-stack">
@@ -116,9 +129,10 @@ function renderSetupScreen(vm) {
 
 function renderMenuPanel(vm) {
   if (!vm.ui.menuOpen || !vm.isWriter) return '';
-  const curOpener = vm.record?.config?.initialServer ?? 0;
-  const altOpener = curOpener === 0 ? 1 : 0;
-  const curLabel = curOpener === 0 ? 'US' : 'THEM';
+  const rawOpener = vm.record?.config?.initialServer;
+  const hasOpener = rawOpener === 0 || rawOpener === 1;
+  const altOpener = rawOpener === 0 ? 1 : 0;
+  const curLabel = rawOpener === 0 ? 'US' : 'THEM';
   const altLabel = altOpener === 0 ? 'US' : 'THEM';
 
   const diagRows =
@@ -141,15 +155,17 @@ function renderMenuPanel(vm) {
       </div>
 
       ${
-        vm.ui.confirmOpenerOpen
-          ? `<div class="confirm-box">
-               <div>Switch first serving team from <strong>${curLabel}</strong> to <strong>${altLabel}</strong>? Scores, timestamps, and UE totals stay intact.</div>
-               <div class="controls-row">
-                 <button class="btn btn-sm" data-action="cancel-opener">Cancel</button>
-                 <button class="btn btn-sm btn-primary" data-action="confirm-opener" data-team="${altOpener}">Switch to ${altLabel}</button>
-               </div>
-             </div>`
-          : `<button class="btn" data-action="open-opener">Correct first serving team (currently ${curLabel})</button>`
+        hasOpener
+          ? vm.ui.confirmOpenerOpen
+            ? `<div class="confirm-box">
+                 <div>Switch first serving team from <strong>${curLabel}</strong> to <strong>${altLabel}</strong>? Scores, timestamps, and UE totals stay intact.</div>
+                 <div class="controls-row">
+                   <button class="btn btn-sm" data-action="cancel-opener">Cancel</button>
+                   <button class="btn btn-sm btn-primary" data-action="confirm-opener" data-team="${altOpener}">Switch to ${altLabel}</button>
+                 </div>
+               </div>`
+            : `<button class="btn" data-action="open-opener">Correct first serving team (currently ${curLabel})</button>`
+          : ''
       }
 
       ${
@@ -185,15 +201,18 @@ function renderLiveScreen(vm) {
   const disabled = vm.isWriter ? '' : 'disabled';
   const undoDisabled = vm.canUndo ? '' : 'disabled';
   const gamesText = s.inTieBreak ? 'TIE-BREAK (6-6)' : `${s.games[0]} - ${s.games[1]}`;
+  const awaitingServer = s.status === 'ACTIVE' && s.needsInitialServer;
+  const servingLabel = s.server === 0 ? 'US' : s.server === 1 ? 'THEM' : 'Awaiting server';
+  const isLoveAllWithServer = !awaitingServer && vm.record && vm.record.events.length === 0;
+  const altServer = s.server === 0 ? 1 : 0;
+  const altServerLabel = altServer === 0 ? 'US' : 'THEM';
 
   return `
     <section class="card" data-screen="LIVE">
       <div class="score-header">
-        <span>Sets ${s.sets[0]}-${s.sets[1]} ${vm.setLines.length ? `(${escapeHtml(vm.setLines.join(', '))})` : ''}</span>
+        <span>Sets ${s.sets[0]}-${s.sets[1]} · ${escapeHtml(s.scoringMode)} ${vm.setLines.length ? `(${escapeHtml(vm.setLines.join(', '))})` : ''}</span>
         <span><span data-duration-text>${escapeHtml(vm.durationText)}</span> · #${s.revision}</span>
       </div>
-
-      ${s.changeEndsAlert ? `<div class="swap-alert">CHANGE ENDS (SWAP)</div>` : ''}
 
       <div class="scoreboard-grid">
         <div class="team-col">
@@ -224,7 +243,7 @@ function renderLiveScreen(vm) {
         </div>
         <div class="sub-score-item">
           <span class="sub-score-label">Serving</span>
-          <span>${s.server === 0 ? 'US' : 'THEM'}</span>
+          <span>${escapeHtml(servingLabel)}</span>
         </div>
       </div>
 
@@ -238,19 +257,37 @@ function renderLiveScreen(vm) {
           : ''
       }
 
-      <div class="controls-row">
-        <button class="btn btn-us" data-action="score" data-code="A" ${disabled}>US +1</button>
-        <button class="btn btn-them" data-action="score" data-code="B" ${disabled}>THEM +1</button>
-      </div>
+      ${
+        awaitingServer
+          ? `<div class="confirm-box" data-testid="server-picker">
+               <div><strong>Warmup Point — Who serves first?</strong></div>
+               <div class="muted">Tap <strong>&lt; (US)</strong> or <strong>&gt; (THEM)</strong> on your Band 9 Active after the 4-touch rally, or pick below.</div>
+               <div class="controls-row">
+                 <button class="btn btn-us" data-action="pick-initial-server" data-team="0" ${disabled}>US Serves</button>
+                 <button class="btn btn-them" data-action="pick-initial-server" data-team="1" ${disabled}>THEM Serves</button>
+               </div>
+             </div>
+             <button class="btn" data-action="toggle-menu" ${disabled}>Menu</button>`
+          : `<div class="controls-row">
+               <button class="btn btn-us" data-action="score" data-code="A" ${disabled}>US +1</button>
+               <button class="btn btn-them" data-action="score" data-code="B" ${disabled}>THEM +1</button>
+             </div>
 
-      <button class="btn btn-ue" data-action="score" data-code="E" ${disabled}>
-        MY UE (+1 Them · My Error)
-      </button>
+             <button class="btn btn-ue" data-action="score" data-code="E" ${disabled}>
+               MY UE (+1 Them · My Error)
+             </button>
 
-      <div class="controls-row">
-        <button class="btn" data-action="undo" ${undoDisabled}>Undo</button>
-        <button class="btn" data-action="toggle-menu" ${disabled}>Menu</button>
-      </div>
+             ${
+               isLoveAllWithServer && vm.isWriter
+                 ? `<button class="btn btn-sm" data-action="confirm-opener" data-team="${altServer}">Change First Server (switch to ${altServerLabel})</button>`
+                 : ''
+             }
+
+             <div class="controls-row">
+               <button class="btn" data-action="undo" ${undoDisabled}>Undo</button>
+               <button class="btn" data-action="toggle-menu" ${disabled}>Menu</button>
+             </div>`
+      }
     </section>
 
     ${renderMenuPanel(vm)}
@@ -273,7 +310,7 @@ function renderMatchOverScreen(vm) {
   return `
     <section class="card" data-screen="MATCH_OVER">
       <div class="score-header">
-        <span>${isManual ? 'FINISHED_MANUAL' : 'WON'}</span>
+        <span>${isManual ? 'FINISHED_MANUAL' : 'WON'} · ${escapeHtml(s.scoringMode)}</span>
         <span>${escapeHtml(vm.durationText)} · #${s.revision}</span>
       </div>
       <h1>${escapeHtml(headline)}</h1>
@@ -462,8 +499,16 @@ function boot() {
     copyFeedback = '';
     const action = btn.dataset.action;
 
-    if (action === 'set-server') {
-      controller.setSetupInitialServer(Number(btn.dataset.team));
+    if (action === 'set-scoring-mode') {
+      controller.setSetupScoringMode(btn.dataset.mode);
+    } else if (action === 'set-server') {
+      const team = btn.dataset.team === '0' ? 0 : btn.dataset.team === '1' ? 1 : null;
+      controller.setSetupInitialServer(team);
+    } else if (action === 'pick-initial-server') {
+      const team = btn.dataset.team === '0' ? 0 : btn.dataset.team === '1' ? 1 : null;
+      if (team !== null) {
+        controller.selectInitialServer(team);
+      }
     } else if (action === 'start-match') {
       controller.startMatch({ linkWrist: true });
     } else if (action === 'cancel-replacement') {
@@ -484,7 +529,10 @@ function boot() {
     } else if (action === 'cancel-opener') {
       controller.setConfirmOpenerOpen(false);
     } else if (action === 'confirm-opener') {
-      controller.correctFirstServer(Number(btn.dataset.team));
+      const team = btn.dataset.team === '0' ? 0 : btn.dataset.team === '1' ? 1 : null;
+      if (team !== null) {
+        controller.correctFirstServer(team);
+      }
     } else if (action === 'open-finish') {
       controller.setConfirmFinishOpen(true);
     } else if (action === 'cancel-finish') {

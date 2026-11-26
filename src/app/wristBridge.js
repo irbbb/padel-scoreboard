@@ -340,8 +340,9 @@ export function createWristBridge({
     setPlaybackStateSafely('playing');
     updatePositionStateSafely(audio);
 
+    let cmdRes;
     try {
-      onCommand(code, action);
+      cmdRes = onCommand(code, action);
     } catch (err) {
       logDiag(`command_error_${action}`, {
         audio,
@@ -351,9 +352,49 @@ export function createWristBridge({
       return;
     }
 
+    if (cmdRes && typeof cmdRes === 'object' && typeof cmdRes.outcome === 'string') {
+      const rev = cmdRes.revision ?? getStoreSnapshot()?.record?.revision ?? null;
+      if (cmdRes.outcome === 'ignored_awaiting_server') {
+        logDiag('ignored_awaiting_server', {
+          audio,
+          revision: rev,
+          detail: cmdRes.detail || `action=${action}`,
+        });
+      } else if (cmdRes.outcome === 'save_failed') {
+        logDiag(`wrist_save_failed_${action}`, {
+          audio,
+          revision: rev,
+          detail: cmdRes.detail || 'save_failed',
+        });
+      } else if (cmdRes.outcome === 'saved') {
+        logDiag(`wrist_${action}`, {
+          audio,
+          revision: rev,
+          detail: cmdRes.detail || `code=${code}`,
+        });
+      } else {
+        logDiag(`wrist_noop_${action}`, {
+          audio,
+          revision: rev,
+          detail: cmdRes.detail || `code=${code}`,
+        });
+      }
+      return;
+    }
+
+    const afterSnap = getStoreSnapshot();
+    if (afterSnap?.lastSaveError) {
+      logDiag(`wrist_save_failed_${action}`, {
+        audio,
+        revision: afterSnap?.record?.revision ?? null,
+        detail: afterSnap.lastSaveError,
+      });
+      return;
+    }
+
     logDiag(`wrist_${action}`, {
       audio,
-      revision: getStoreSnapshot()?.record?.revision ?? null,
+      revision: afterSnap?.record?.revision ?? null,
       detail: `code=${code}`,
     });
   }

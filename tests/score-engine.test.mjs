@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createMatch,
   deriveMatchState,
+  reducePoint,
   addPoint,
   undoLastPoint,
   correctInitialServer,
@@ -72,7 +73,7 @@ test('ordinary Golden Point game progression and deep snapshot immutability', ()
   assert.equal(deriveMatchState(mCorrected, T0 + 1000).uesWhileReceiving, 1);
 
   // Golden Point 40-40 -> next point wins
-  let mg = createMatch({ matchId: 'gp2', config: { initialServer: 0 }, nowMs: T0 });
+  let mg = createMatch({ matchId: 'gp2', config: { scoringMode: 'GP', initialServer: 0 }, nowMs: T0 });
   mg = addPoint(mg, 'A', T0 + 1000);
   mg = addPoint(mg, 'A', T0 + 2000);
   mg = addPoint(mg, 'A', T0 + 3000);
@@ -448,7 +449,136 @@ test('strict persisted-record validation rejects missing rules, mismatched WON f
 
   // 7. Unsupported P0 config at creation -> rejected
   assert.throws(
-    () => createMatch({ matchId: 'bad-cfg', config: { scoringMode: 'AD', initialServer: 0 }, nowMs: T0 }),
+    () => createMatch({ matchId: 'bad-cfg', config: { scoringMode: 'STAR', initialServer: 0 }, nowMs: T0 }),
     /Unsupported P0 scoringMode/
   );
+});
+
+test('Advantage (AD) deuce battle, UE serve attribution, Undo back to AD-40, and GP comparison', () => {
+  // Start at 40-40 deuce with US serving under AD (default)
+  let ad = createMatch({ matchId: 'ad-deuce', config: { initialServer: 0 }, nowMs: T0 });
+  assert.equal(ad.config.scoringMode, 'AD');
+  let t = T0;
+  for (const code of ['A', 'A', 'A', 'B', 'B', 'B']) {
+    t += 1000;
+    ad = addPoint(ad, code, t);
+  }
+  assert.deepEqual(deriveMatchState(ad, t).pointsLabel, ['40', '40']);
+
+  // Reviewer regression: from deuce play A, E, E, A, A, A -> 1 game US, 2 UEs while serving, 1 service change
+  for (const code of ['A', 'E', 'E', 'A', 'A', 'A']) {
+    t += 1000;
+    ad = addPoint(ad, code, t);
+  }
+  const wonGameState = deriveMatchState(ad, t);
+  assert.deepEqual(wonGameState.games, [1, 0]);
+  assert.deepEqual(wonGameState.pointsLabel, ['0', '0']);
+  assert.equal(wonGameState.server, 1);
+  assert.equal(wonGameState.counts.myUePoints, 2);
+  assert.equal(wonGameState.uesWhileServing, 2);
+  assert.equal(wonGameState.uesWhileReceiving, 0);
+
+  // Undo last rally -> AD-40 with US still serving
+  const undone = undoLastPoint(ad);
+  const undoneState = deriveMatchState(undone, t);
+  assert.deepEqual(undoneState.games, [0, 0]);
+  assert.deepEqual(undoneState.points, [4, 3]);
+  assert.deepEqual(undoneState.pointsLabel, ['AD', '40']);
+  assert.equal(undoneState.server, 0);
+
+  // Same starting deuce under GP -> first A alone wins the game
+  let gp = createMatch({ matchId: 'gp-deuce', config: { scoringMode: 'GP', initialServer: 0 }, nowMs: T0 });
+  t = T0;
+  for (const code of ['A', 'A', 'A', 'B', 'B', 'B']) {
+    t += 1000;
+    gp = addPoint(gp, code, t);
+  }
+  gp = addPoint(gp, 'A', t + 1000);
+  const gpState = deriveMatchState(gp, t + 1000);
+  assert.deepEqual(gpState.games, [1, 0]);
+  assert.equal(gpState.server, 1);
+});
+
+test('nullable initialServer (pick on watch) invariants, guards, finish/resume, and first-rally undo', () => {
+  const m0 = createMatch({ matchId: 'null-srv', config: { initialServer: null }, nowMs: T0 });
+  const s0 = deriveMatchState(m0, T0);
+  assert.equal(s0.needsInitialServer, true);
+  assert.equal(s0.server, null);
+  assert.equal(m0.revision, 1);
+  assert.equal(m0.nextEventId, 1);
+
+  // Empty active undo is an identity no-op
+  assert.strictEqual(undoLastPoint(m0), m0);
+
+  // Scoring before picking server throws in both addPoint and direct reducePoint
+  assert.throws(() => addPoint(m0, 'A', T0 + 1000), /first serving team/);
+  assert.throws(
+    () =>
+      reducePoint(
+        {
+          sets: [0, 0],
+          setHistory: [],
+          games: [0, 0],
+          points: [0, 0],
+          inTieBreak: false,
+          server: null,
+          tieBreakFirstServer: null,
+          changeEndsAlert: false,
+          winner: null,
+          winningEventIndex: -1,
+          ourPoints: 0,
+          themOtherPoints: 0,
+          myUePoints: 0,
+          uesPerSet: [],
+          uesWhileServing: 0,
+          uesWhileReceiving: 0,
+        },
+        { id: 1, t: T0 + 1000, code: 'E' },
+        0,
+        m0.config
+      ),
+    /Invalid state\.server/
+  );
+
+  // Persisted record with initialServer: null AND events.length > 0 is rejected by replayAndValidate
+  assert.throws(
+    () =>
+      validateMatchRecord({
+        ...m0,
+        nextEventId: 2,
+        events: [{ id: 1, t: T0 + 1000, code: 'A' }],
+      }),
+    /initialServer cannot be null/
+  );
+  // WON with null opener fails status validation
+  assert.throws(
+    () => validateMatchRecord({ ...m0, status: 'WON', finishTimeMs: T0 + 1000 }),
+    /Status mismatch/
+  );
+
+  // Manual finish & resume work cleanly with null opener
+  const fin = finishManual(m0, T0 + 5000);
+  assert.equal(deriveMatchState(fin, T0 + 9000).needsInitialServer, true);
+  assert.equal(deriveMatchState(fin, T0 + 9000).status, 'FINISHED_MANUAL');
+  assert.throws(() => correctInitialServer(fin, 0), /FINISHED_MANUAL/);
+  const resumed = resumeMatch(fin);
+  assert.equal(deriveMatchState(resumed, T0 + 10000).status, 'ACTIVE');
+  assert.equal(deriveMatchState(resumed, T0 + 10000).needsInitialServer, true);
+
+  // First pick transitions null -> 1, bumps revision once, preserves events & nextEventId
+  const picked = correctInitialServer(m0, 1);
+  assert.equal(picked.revision, 2);
+  assert.equal(picked.nextEventId, 1);
+  assert.equal(picked.events.length, 0);
+  assert.equal(deriveMatchState(picked, T0 + 1000).server, 1);
+  assert.equal(deriveMatchState(picked, T0 + 1000).needsInitialServer, false);
+  // Picking same team again is an identity no-op
+  assert.strictEqual(correctInitialServer(picked, 1), picked);
+
+  // Scoring first rally then undoing retains selected opener and advanced nextEventId
+  const afterPt = addPoint(picked, 'A', T0 + 2000);
+  const afterUndo = undoLastPoint(afterPt);
+  assert.equal(afterUndo.config.initialServer, 1);
+  assert.equal(afterUndo.nextEventId, 2);
+  assert.equal(afterUndo.events.length, 0);
 });

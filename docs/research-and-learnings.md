@@ -65,5 +65,13 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 - **Guarding Against Audio Focus Loss & Phantom Points:** Ordinary `<audio>` DOM events (`play`, `playing`, `pause`, `ended`, `error`) only sync `playbackState` and detect unexpected interruptions (`status = 'INTERRUPTED'`)—they never score or auto-arm. Inside `MediaSession` callbacks, checking `status === 'ARMED' && !audio.paused && !audio.ended` provides an extra defense if Android pauses audio during a call or notification before delivering a stale callback. Screen lock (`visibilitychange` → `hidden`) intentionally leaves the bridge armed.
 - **Preserving User-Gesture Activation on `Start Match`:** Because `matchStore.startNewMatch()` writes to `localStorage` synchronously before returning its Promise, tapping `Start Match` can commit revision 1 and invoke `audio.play()` synchronously inside the same click handler—linking the wrist in one tap while still falling back cleanly to phone-only scoring if `audio.play()` rejects.
 
+---
+
+## 8. Real-Court Amateur Padel Feedback Learnings
+- **Advantage (`AD`) Is Primary:** Amateur matches play standard Deuce (`40-40`) ↔ Advantage (`AD-40` / `40-AD`) until a team wins a point while holding `AD`. Keeping both `AD` (default) and `GP` (Golden Point) selectable on Setup and frozen into `record.config.scoringMode` preserves backwards compatibility while matching real court play.
+- **Watch-Selectable First Server (`initialServer: null` before first point):** Players decide who serves first with a 4-touch warmup rally on court *after* putting the phone in the bag. Allowing `config.initialServer = null` strictly while `events.length === 0` lets the watch display `WHO SERVES? #1` / `< US   THEM >`, where `Prev` (`US`) or `Next` (`THEM`) sets the opener (incrementing `revision` to `#2` without adding a point) and Center (`E`) is safely ignored until the opener is chosen.
+- **Low-Noise Side-Change Display:** Amateur matches switch ends only at set breaks and do not need odd-game `SWAP`/`SWP` alerts cluttering the phone screen or Band 9 Active's tight `artist` line (`showSwap: false` default frees characters for `S1-1 UE:12`).
+
+
 
 

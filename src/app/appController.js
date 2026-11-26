@@ -112,8 +112,9 @@ export function createAppController({
   const diagLog = createDiagnosticLog({ storage, now });
   const initialDefaults = loadMatchDefaults(storage);
 
+  let setupScoringMode = initialDefaults.scoringMode;
   let setupInitialServer = initialDefaults.initialServer;
-  let replacementDraft = null; // { baseMatchId, baseRevision, initialServer } | null
+  let replacementDraft = null; // { baseMatchId, baseRevision, scoringMode, initialServer } | null
   let menuOpen = false;
   let confirmFinishOpen = false;
   let confirmClearCorruptOpen = false;
@@ -200,9 +201,64 @@ export function createAppController({
     diagLog,
     now,
     getStoreSnapshot: () => store.getSnapshot(now()),
-    onCommand: (code) => {
+    onCommand: (code, action) => {
       actionError = null;
-      return store.commit((rec) => addPoint(rec, code, now()), now());
+      const nowMs = now();
+      const beforeSnap = store.getSnapshot(nowMs);
+      const beforeRev = beforeSnap.record?.revision ?? null;
+
+      let ignoredAwaitingServer = false;
+      let actionDetail = `code=${code}`;
+
+      const promise = store.commit((rec) => {
+        if (rec.status === 'ACTIVE' && rec.config.initialServer === null) {
+          if (code === 'A') {
+            actionDetail = 'pick_server=US';
+            return correctInitialServer(rec, 0);
+          }
+          if (code === 'B') {
+            actionDetail = 'pick_server=THEM';
+            return correctInitialServer(rec, 1);
+          }
+          ignoredAwaitingServer = true;
+          return rec;
+        }
+        return addPoint(rec, code, nowMs);
+      }, nowMs);
+
+      const afterSnap = store.getSnapshot(nowMs);
+      const afterRev = afterSnap.record?.revision ?? null;
+
+      if (ignoredAwaitingServer) {
+        return {
+          outcome: 'ignored_awaiting_server',
+          revision: afterRev,
+          detail: `action=${action}`,
+          promise,
+        };
+      }
+      if (afterSnap.lastSaveError !== null) {
+        return {
+          outcome: 'save_failed',
+          revision: afterRev,
+          detail: afterSnap.lastSaveError,
+          promise,
+        };
+      }
+      if (afterRev !== beforeRev) {
+        return {
+          outcome: 'saved',
+          revision: afterRev,
+          detail: actionDetail,
+          promise,
+        };
+      }
+      return {
+        outcome: 'noop',
+        revision: afterRev,
+        detail: actionDetail,
+        promise,
+      };
     },
     onStatusChange: () => {
       emitUpdate();
@@ -248,6 +304,7 @@ export function createAppController({
       }
     }
 
+    const activeScoringMode = replacementDraft ? replacementDraft.scoringMode : setupScoringMode;
     const activeInitialServer = replacementDraft ? replacementDraft.initialServer : setupInitialServer;
 
     let readOnlyReason = null;
@@ -278,6 +335,7 @@ export function createAppController({
       state,
       wristPreview,
       wrist,
+      setupScoringMode: activeScoringMode,
       setupInitialServer: activeInitialServer,
       durationText: state ? formatDuration(state.durationSec) : '00:00',
       uePctText: state ? formatUePercent(state.myUePctOfPointsLost) : '—',
@@ -323,8 +381,18 @@ export function createAppController({
     return acquired;
   }
 
+  function setSetupScoringMode(mode) {
+    const normalized = mode === 'GP' ? 'GP' : 'AD';
+    if (replacementDraft) {
+      replacementDraft = { ...replacementDraft, scoringMode: normalized };
+    } else {
+      setupScoringMode = normalized;
+    }
+    emitUpdate();
+  }
+
   function setSetupInitialServer(team) {
-    const normalized = team === 1 ? 1 : 0;
+    const normalized = team === 0 ? 0 : team === 1 ? 1 : null;
     if (replacementDraft) {
       replacementDraft = { ...replacementDraft, initialServer: normalized };
     } else {
@@ -368,14 +436,16 @@ export function createAppController({
       return Promise.resolve({ ok: false, error: new Error(actionError) });
     }
 
+    const chosenScoringMode = replacementDraft ? replacementDraft.scoringMode : setupScoringMode;
     const chosenServer = replacementDraft ? replacementDraft.initialServer : setupInitialServer;
+    setupScoringMode = chosenScoringMode;
     setupInitialServer = chosenServer;
-    saveMatchDefaults(storage, { initialServer: chosenServer });
+    saveMatchDefaults(storage, { scoringMode: chosenScoringMode, initialServer: chosenServer });
 
     const matchId = createMatchId(nowMs);
     const commitPromise = store.startNewMatch({
       matchId,
-      config: { initialServer: chosenServer },
+      config: { scoringMode: chosenScoringMode, initialServer: chosenServer },
       nowMs,
     });
 
@@ -431,6 +501,19 @@ export function createAppController({
     return runGuardedCommit((rec) => undoLastPoint(rec));
   }
 
+  function selectInitialServer(team) {
+    if (team !== 0 && team !== 1) {
+      return Promise.resolve({ ok: false, error: new Error('Invalid team index') });
+    }
+    // Harmless no-op if the opener was already chosen (e.g. from the watch moments earlier)
+    return runGuardedCommit((rec) => {
+      if (rec.status !== 'ACTIVE' || rec.config.initialServer !== null) {
+        return rec;
+      }
+      return correctInitialServer(rec, team);
+    });
+  }
+
   function correctFirstServer(newInitialServer) {
     const target = newInitialServer === 1 ? 1 : 0;
     confirmOpenerOpen = false;
@@ -462,6 +545,7 @@ export function createAppController({
     replacementDraft = {
       baseMatchId: snap.record.matchId,
       baseRevision: snap.record.revision,
+      scoringMode: setupScoringMode,
       initialServer: setupInitialServer,
     };
     emitUpdate();
@@ -652,10 +736,12 @@ export function createAppController({
   return {
     init,
     getViewModel,
+    setSetupScoringMode,
     setSetupInitialServer,
     startMatch,
     scorePoint,
     undo,
+    selectInitialServer,
     correctFirstServer,
     finishNow,
     resume,
