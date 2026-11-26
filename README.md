@@ -28,7 +28,7 @@ Start a native Band Workout (recording Heart Rate) and swipe right to **Music Co
 
 | 1. Pick First Server | 2. Score Live Rallies | 3. Open Edit (`\|\|`) | 4. Resume Live (`\|\|`) |
 | :---: | :---: | :---: | :---: |
-| <img src="docs/screenshots/band-warmup.svg" alt="Xiaomi Smart Band 9 Active showing WHO SERVES? #1" width="175"> | <img src="docs/screenshots/band-live.svg" alt="Xiaomi Smart Band 9 Active showing *30-15 4-1 #65" width="175"> | <img src="docs/screenshots/band-edit.svg" alt="Xiaomi Smart Band 9 Active showing EDIT #65" width="175"> | <img src="docs/screenshots/band-resume.svg" alt="Xiaomi Smart Band 9 Active showing UE *30-30 #66 TAP || FOR LIVE" width="175"> |
+| <img src="docs/screenshots/band-warmup.svg" alt="Xiaomi Smart Band 9 Active showing WHO SERVES? #1" width="175"> | <img src="docs/screenshots/band-live.svg" alt="Xiaomi Smart Band 9 Active showing *30-15 4-1 #65" width="175"> | <img src="docs/screenshots/band-edit.svg" alt="Xiaomi Smart Band 9 Active showing EDIT #65" width="175"> | <img src="docs/screenshots/band-resume.svg" alt="Xiaomi Smart Band 9 Active showing UE *30-30 #66 resume screen" width="175"> |
 | `<` US or `>` THEM (no point scored) | `<` US +1 · `\|\|` Edit · `>` THEM +1 | `<` Undo last point · `>` My UE | Arrows lock against double-taps until `\|\|` |
 
 ---
