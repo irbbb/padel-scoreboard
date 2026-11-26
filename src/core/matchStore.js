@@ -21,6 +21,7 @@ export function createMatchStore({
   storage,
   locks = null,
   publishWrist = null,
+  capturePublishContext = null,
   onStateChange = null,
   now = () => Date.now(),
   storageKey = MATCH_STORAGE_KEY,
@@ -53,7 +54,6 @@ export function createMatchStore({
   let pendingReleasePromise = null;
 
   let publishQueue = Promise.resolve();
-  let publishSeq = 0;
 
   function safeNotify() {
     if (typeof onStateChange !== 'function') return;
@@ -130,10 +130,14 @@ export function createMatchStore({
       return Promise.resolve({ wristPublished: false, publishError: null });
     }
 
-    const seq = ++publishSeq;
+    const publishContext =
+      typeof capturePublishContext === 'function'
+        ? capturePublishContext(snapshotState, snapshotRecord)
+        : undefined;
+
     const job = publishQueue.then(async () => {
       try {
-        const result = await publishWrist(snapshotState, snapshotRecord);
+        const result = await publishWrist(snapshotState, snapshotRecord, publishContext);
         if (result && result.skipped === true) {
           return { wristPublished: false, publishError: null };
         }

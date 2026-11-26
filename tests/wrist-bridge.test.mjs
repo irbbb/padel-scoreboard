@@ -210,11 +210,12 @@ function buildRig({
     storage,
     locks,
     now: () => clock,
-    publishWrist: async (state, record) => {
+    capturePublishContext: () => (bridge ? bridge.capturePublishContext() : null),
+    publishWrist: async (state, record, originToken) => {
       if (typeof holdPublish === 'function') {
         await holdPublish(state, record);
       }
-      return bridge.publishSnapshot(state, record);
+      return bridge.publishSnapshot(state, record, originToken);
     },
     onStateChange: (snap) => {
       if (bridge) bridge.syncStoreSnapshot(snap);
@@ -497,5 +498,53 @@ test('Resume cancels lingering pendingFinal and stops its audio without pausing 
   gate.resolve();
   await Promise.all([pFinish, pResume]);
   assert.equal(rig.bridge.getStatus().status, 'DISARMED'); // Reopens disarmed!
+  await rig.store.releaseWriter();
+});
+
+test('queued re-publishes are bound to their originating link token: superseded link skips rev 1 & rev 2 and reports wristPublished=false', async () => {
+  const gate = createDeferred();
+  let hold = true;
+  const rig = buildRig({
+    holdPublish: async () => {
+      if (hold) await gate.promise;
+    },
+  });
+
+  await rig.store.tryAcquireWriter();
+  // Start match (unlinked publish job #0 is queued and held at gate)
+  const pStart = rig.store.startNewMatch({ matchId: 'm-link-token', config: { initialServer: 0 }, nowMs: 1000 });
+
+  // Link #1 at rev 1 (republish job #1 queued with token 1, waiting behind gate)
+  const pLink1 = rig.bridge.linkFromUserGesture(() => rig.store.republishWrist(rig.nextTime()));
+  // Let link #1's audio.play() resolve so it enters ARMED and enqueues its republish
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(rig.bridge.getStatus().status, 'ARMED');
+
+  // Score to rev 2 while Link #1 is ARMED (commit job #2 queued with token 1)
+  const pScore = rig.store.commit((r) => addPoint(r, 'A', rig.nextTime()), rig.nextTime());
+
+  // Re-link #2 on same match BEFORE draining queue (republish job #3 queued with token 2)
+  const pLink2 = rig.bridge.linkFromUserGesture(() => rig.store.republishWrist(rig.nextTime()));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(rig.bridge.getStatus().status, 'ARMED');
+
+  // Drain publish queue
+  hold = false;
+  gate.resolve();
+  const [, link1Res, scoreRes, link2Res] = await Promise.all([pStart, pLink1, pScore, pLink2]);
+
+  // Superseded Link #1 and old-token rev 2 commit must be skipped; Link #2 receives rev 2 ONCE
+  assert.equal(link1Res.ok, true);
+  assert.equal(link1Res.publishResult.wristPublished, false);
+  assert.equal(scoreRes.wristPublished, false);
+  assert.equal(link2Res.ok, true);
+  assert.equal(link2Res.publishResult.wristPublished, true);
+
+  assert.deepEqual(
+    rig.mediaSession.metadataLog.map((m) => m.title),
+    ['*15-0 0-0 #2']
+  );
   await rig.store.releaseWriter();
 });

@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MATCH_STORAGE_KEY } from '../src/core/matchStore.js';
-import { createAppController, formatDuration, formatSetLine, formatUePercent } from '../src/app/appController.js';
+import {
+  createAppController,
+  createGuardedStorage,
+  formatDiagTime,
+  formatDuration,
+  formatSetLine,
+  formatUePercent,
+} from '../src/app/appController.js';
 import { DEFAULTS_STORAGE_KEY } from '../src/app/defaultsStore.js';
 
 function createMemoryStorage() {
@@ -363,4 +370,198 @@ test('READ_ERROR offers Retry Read and BFCache restore rechecks lock starting di
   assert.equal(ctrl.getViewModel().screen, 'LIVE');
   assert.equal(ctrl.getViewModel().wrist.status, 'DISARMED');
   await ctrl.handlePageHideOrFreeze();
+});
+
+test('Regression P1: duration ticks and visibility return update via onDurationTick without firing full onUpdate', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  let clock = 1000;
+  let fullUpdates = 0;
+  const tickValues = [];
+
+  const ctrl = createAppController({
+    storage,
+    locks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-tick',
+    now: () => clock,
+    onUpdate: () => {
+      fullUpdates += 1;
+    },
+    onDurationTick: (text) => {
+      tickValues.push(text);
+    },
+  });
+
+  await ctrl.init();
+  await ctrl.startMatch({ linkWrist: false });
+  const updatesBeforeTick = fullUpdates;
+
+  clock += 5000;
+  ctrl.tickDisplay();
+  clock += 7000;
+  ctrl.handleVisibilityChange('visible');
+
+  assert.equal(fullUpdates, updatesBeforeTick);
+  assert.deepEqual(tickValues, ['00:05', '00:12']);
+  assert.equal(ctrl.getViewModel().record.revision, 1);
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('Regression P2: rejecting Web Lock on init/takeover/restore never leaves LOADING or unhandled rejection', async () => {
+  const storage = createMemoryStorage();
+  let rejectLock = true;
+  const flakyLocks = {
+    request(name, opts, cb) {
+      if (rejectLock) {
+        return Promise.reject(new Error('SecurityError: Web Locks blocked'));
+      }
+      return Promise.resolve(cb({ name }));
+    },
+  };
+
+  const ctrl = createAppController({
+    storage,
+    locks: flakyLocks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-lockerr',
+    now: () => 1000,
+  });
+
+  const initAcquired = await ctrl.init();
+  assert.equal(initAcquired, false);
+  let vm = ctrl.getViewModel();
+  assert.notEqual(vm.screen, 'LOADING');
+  assert.equal(vm.screen, 'SETUP');
+  assert.equal(vm.lockStatus, 'ERROR');
+  assert.match(vm.takeoverNotice, /SecurityError/);
+
+  // Retry while still failing -> stays recoverable without rejecting
+  assert.equal(await ctrl.takeOverWriter(), false);
+  assert.equal(ctrl.getViewModel().lockStatus, 'ERROR');
+
+  // Lock recovers -> Take Over Writer succeeds
+  rejectLock = false;
+  assert.equal(await ctrl.takeOverWriter(), true);
+  assert.equal(ctrl.getViewModel().isWriter, true);
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('Regression P2: throwing localStorage getter at boot defers into recoverable READ_ERROR screen', async () => {
+  const backing = createMemoryStorage();
+  let getterBlocked = true;
+  const guarded = createGuardedStorage(() => {
+    if (getterBlocked) throw new Error('SecurityError: localStorage denied');
+    return backing;
+  });
+
+  const ctrl = createAppController({
+    storage: guarded,
+    locks: createSharedMockLocks(),
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-getter',
+    now: () => 1000,
+  });
+
+  await ctrl.init();
+  assert.equal(ctrl.getViewModel().screen, 'READ_ERROR');
+  assert.match(ctrl.getViewModel().storageReadError, /SecurityError/);
+
+  // Once browser storage becomes readable, Retry Read recovers cleanly
+  getterBlocked = false;
+  const retry = ctrl.retryRead();
+  assert.equal(retry.ok, true);
+  assert.equal(ctrl.getViewModel().screen, 'SETUP');
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('Regression P2: handlePageShowOrResume awaits pending release (including delayed initial grant) and respects superseded hide', async () => {
+  const storage = createMemoryStorage();
+  let held = false;
+  let delayGrant = null;
+  let delayOuterFinish = null;
+
+  const delayedLocks = {
+    request(name, opts, cb) {
+      const run = () => {
+        if (held && opts?.ifAvailable) return Promise.resolve(cb(null));
+        held = true;
+        return Promise.resolve(cb({ name })).finally(async () => {
+          if (delayOuterFinish) {
+            const p = delayOuterFinish;
+            delayOuterFinish = null;
+            await p;
+          }
+          held = false;
+        });
+      };
+      if (delayGrant) {
+        const g = delayGrant;
+        delayGrant = null;
+        return g.then(run);
+      }
+      return run();
+    },
+  };
+
+  const ctrl = createAppController({
+    storage,
+    locks: delayedLocks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-lifecycle',
+    now: () => 1000,
+  });
+
+  // Case A: delayed initial lock grant across hide -> restore
+  let resolveInitialGrant;
+  delayGrant = new Promise((r) => {
+    resolveInitialGrant = r;
+  });
+  const initPromise = ctrl.init();
+  const hidePromise = ctrl.handlePageHideOrFreeze('pagehide');
+  const restorePromise = ctrl.handlePageShowOrResume();
+
+  resolveInitialGrant();
+  await initPromise;
+  await hidePromise;
+  const restoredA = await restorePromise;
+  assert.equal(restoredA, true);
+  assert.equal(ctrl.getViewModel().isWriter, true);
+  assert.equal(ctrl.getViewModel().lockStatus, 'HELD');
+
+  // Case B: delayed writer release across hide -> restore
+  let resolveOuter;
+  delayOuterFinish = new Promise((r) => {
+    resolveOuter = r;
+  });
+  const hideB = ctrl.handlePageHideOrFreeze('freeze');
+  const restoreB = ctrl.handlePageShowOrResume();
+  resolveOuter();
+  await hideB;
+  assert.equal(await restoreB, true);
+  assert.equal(ctrl.getViewModel().isWriter, true);
+
+  // Case C: another hide during restore wait supersedes restore and stays READ_ONLY
+  let resolveOuterC;
+  delayOuterFinish = new Promise((r) => {
+    resolveOuterC = r;
+  });
+  const hideC1 = ctrl.handlePageHideOrFreeze('pagehide');
+  const restoreC = ctrl.handlePageShowOrResume();
+  const hideC2 = ctrl.handlePageHideOrFreeze('freeze');
+  resolveOuterC();
+  await Promise.all([hideC1, hideC2]);
+  assert.equal(await restoreC, false);
+  assert.equal(ctrl.getViewModel().isWriter, false);
+});
+
+test('Regression P2: malformed diagnostic timestamp formats safely without throwing RangeError', () => {
+  assert.equal(formatDiagTime(1e20), '--:--:--');
+  assert.equal(formatDiagTime(-1e20), '--:--:--');
+  assert.equal(formatDiagTime(Number.NaN), '--:--:--');
+  assert.equal(formatDiagTime(Date.UTC(2026, 0, 1, 14, 5, 9)), '14:05:09');
 });

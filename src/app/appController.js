@@ -46,6 +46,49 @@ export function formatSetLine(setEntry) {
   return base;
 }
 
+export function formatDiagTime(timestampMs) {
+  if (typeof timestampMs !== 'number' || !Number.isFinite(timestampMs)) {
+    return '--:--:--';
+  }
+  const date = new Date(timestampMs);
+  if (Number.isNaN(date.getTime())) {
+    return '--:--:--';
+  }
+  return date.toISOString().slice(11, 19);
+}
+
+/**
+ * Wraps lazy browser storage access (e.g. `() => window.localStorage`) so a throwing
+ * getter (such as SecurityError when cookies/storage are blocked) is deferred into
+ * guarded storage methods instead of crashing app boot.
+ */
+export function createGuardedStorage(getStorage) {
+  function resolve() {
+    const target = typeof getStorage === 'function' ? getStorage() : null;
+    if (
+      !target ||
+      typeof target.getItem !== 'function' ||
+      typeof target.setItem !== 'function' ||
+      typeof target.removeItem !== 'function'
+    ) {
+      throw new Error('Browser storage is unavailable');
+    }
+    return target;
+  }
+
+  return {
+    getItem(key) {
+      return resolve().getItem(key);
+    },
+    setItem(key, value) {
+      return resolve().setItem(key, value);
+    },
+    removeItem(key) {
+      return resolve().removeItem(key);
+    },
+  };
+}
+
 function defaultCreateMatchId(nowMs) {
   const rand = Math.random().toString(36).slice(2, 8);
   return `m-${nowMs}-${rand}`;
@@ -64,6 +107,7 @@ export function createAppController({
   createMatchId = defaultCreateMatchId,
   now = () => Date.now(),
   onUpdate = null,
+  onDurationTick = null,
 } = {}) {
   const diagLog = createDiagnosticLog({ storage, now });
   const initialDefaults = loadMatchDefaults(storage);
@@ -78,6 +122,8 @@ export function createAppController({
   let takeoverNotice = null;
   let initialized = false;
   let tornDown = false;
+  let lifecycleGen = 0;
+  let pendingRelease = null;
 
   let wristBridge = null;
   let store = null;
@@ -88,6 +134,15 @@ export function createAppController({
       onUpdate(getViewModel());
     } catch {
       // Isolate view render exceptions
+    }
+  }
+
+  function emitDurationTick(durationText) {
+    if (typeof onDurationTick !== 'function') return;
+    try {
+      onDurationTick(durationText);
+    } catch {
+      // Isolate view tick exceptions
     }
   }
 
@@ -109,9 +164,10 @@ export function createAppController({
     storage,
     locks,
     now,
-    publishWrist: (state, record) => {
+    capturePublishContext: () => (wristBridge ? wristBridge.capturePublishContext() : null),
+    publishWrist: (state, record, originToken) => {
       if (!wristBridge) return { skipped: true };
-      return wristBridge.publishSnapshot(state, record);
+      return wristBridge.publishSnapshot(state, record, originToken);
     },
     onStateChange: (snapshot) => {
       reconcileDraft(snapshot);
@@ -244,11 +300,25 @@ export function createAppController({
     });
   }
 
+  async function tryAcquireWriterSafely() {
+    try {
+      const acquired = await store.tryAcquireWriter();
+      return { acquired, error: null };
+    } catch (err) {
+      // Move storageStatus out of UNREAD so UI renders saved/recovery view + retry banner
+      store.refreshReadOnly();
+      return { acquired: false, error: err };
+    }
+  }
+
   async function init() {
     tornDown = false;
     initialized = true;
     emitUpdate();
-    const acquired = await store.tryAcquireWriter();
+    const { acquired, error } = await tryAcquireWriterSafely();
+    if (error) {
+      takeoverNotice = `Writer lock error: ${toErrorMessage(error)}`;
+    }
     emitUpdate();
     return acquired;
   }
@@ -412,10 +482,12 @@ export function createAppController({
   async function takeOverWriter() {
     actionError = null;
     takeoverNotice = null;
-    const acquired = await store.tryAcquireWriter();
+    const { acquired, error } = await tryAcquireWriterSafely();
     if (!acquired) {
       const snap = store.getSnapshot(now());
-      if (snap.lockStatus === 'BUSY') {
+      if (error) {
+        takeoverNotice = `Writer lock error: ${toErrorMessage(error)}`;
+      } else if (snap.lockStatus === 'BUSY') {
         takeoverNotice = 'Still held by another open tab or PWA window.';
       } else if (snap.lockStatus === 'UNAVAILABLE') {
         takeoverNotice = 'Web Locks API is unavailable in this context.';
@@ -507,25 +579,59 @@ export function createAppController({
   function handleVisibilityChange(visibilityState) {
     wristBridge.handleVisibilityChange(visibilityState);
     if (visibilityState === 'visible') {
-      // Immediately refresh displayed durationSec without mutating match or publishing wrist
-      emitUpdate();
+      // Immediately refresh displayed durationSec in place without mutating or replacing DOM controls
+      tickDisplay();
     }
   }
 
   function handlePageHideOrFreeze(reason = 'pagehide') {
-    if (tornDown) return Promise.resolve();
+    lifecycleGen += 1;
+    if (tornDown) {
+      return pendingRelease ?? Promise.resolve();
+    }
     tornDown = true;
     wristBridge.destroy();
-    return store.releaseWriter();
+    const rel = Promise.resolve(store.releaseWriter()).finally(() => {
+      if (pendingRelease === rel) {
+        pendingRelease = null;
+      }
+    });
+    pendingRelease = rel;
+    return rel;
   }
 
   async function handlePageShowOrResume() {
     if (!initialized) return false;
+    const myGen = ++lifecycleGen;
     tornDown = false;
-    // Always start disarmed on BFCache restore / resume; recheck writer lock & reread storage
+    // Always start disarmed on BFCache restore / resume; wait for any in-flight release first
     wristBridge.disarm('page_restore');
-    const acquired = await store.tryAcquireWriter();
-    if (!acquired) {
+
+    if (pendingRelease) {
+      try {
+        await pendingRelease;
+      } catch {
+        // Ignore release errors before rechecking lock
+      }
+    }
+
+    // Abort if another hide/freeze or newer restore superseded this restore while waiting
+    if (myGen !== lifecycleGen || tornDown) {
+      return false;
+    }
+
+    const { acquired, error } = await tryAcquireWriterSafely();
+
+    if (myGen !== lifecycleGen || tornDown) {
+      if (acquired) {
+        await store.releaseWriter();
+      }
+      return false;
+    }
+
+    if (error) {
+      takeoverNotice = `Writer lock error: ${toErrorMessage(error)}`;
+    } else if (!acquired) {
       store.refreshReadOnly();
     }
     emitUpdate();
@@ -535,9 +641,12 @@ export function createAppController({
   function tickDisplay() {
     // Lightweight UI refresh for live durationSec; zero commits, zero revision bumps, zero wrist publishes
     const snap = store.getSnapshot(now());
-    if (snap.record && snap.record.status === 'ACTIVE') {
-      emitUpdate();
+    if (snap.record && snap.record.status === 'ACTIVE' && snap.state) {
+      const text = formatDuration(snap.state.durationSec);
+      emitDurationTick(text);
+      return text;
     }
+    return null;
   }
 
   return {

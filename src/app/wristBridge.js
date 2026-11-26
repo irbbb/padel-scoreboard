@@ -489,6 +489,10 @@ export function createWristBridge({
         });
         notify();
 
+        if (myToken !== linkToken || activeSession?.token !== myToken) {
+          return { ok: false, stale: true, error: new Error('Link superseded before republish') };
+        }
+
         let publishResult = null;
         if (typeof republishFn === 'function') {
           try {
@@ -600,11 +604,22 @@ export function createWristBridge({
   }
 
   /**
+   * Captures the currently armed link token at publish enqueue time so a superseded link's
+   * queued ACTIVE publishes or re-publishes are skipped cleanly if a newer link takes over.
+   */
+  function capturePublishContext() {
+    if (status === 'ARMED' && activeSession) {
+      return activeSession.token;
+    }
+    return null;
+  }
+
+  /**
    * Invoked by matchStore's FIFO publishQueue after storage.setItem succeeds.
    * Returns { skipped: true } whenever no metadata was actually published so matchStore
    * never lets a skipped publish clear an existing lastPublishError.
    */
-  function publishSnapshot(state, record) {
+  function publishSnapshot(state, record, originToken = undefined) {
     if (!supported) {
       return { skipped: true };
     }
@@ -612,6 +627,9 @@ export function createWristBridge({
     // Exact-record terminal publish path
     if (pendingFinal !== null) {
       if (record !== pendingFinal.record) {
+        return { skipped: true };
+      }
+      if (originToken !== undefined && originToken !== pendingFinal.token) {
         return { skipped: true };
       }
 
@@ -641,6 +659,10 @@ export function createWristBridge({
 
     // Active live publish path
     if (status !== 'ARMED' || !activeSession) {
+      return { skipped: true };
+    }
+
+    if (originToken !== undefined && originToken !== activeSession.token) {
       return { skipped: true };
     }
 
@@ -682,6 +704,7 @@ export function createWristBridge({
     getStatus,
     linkFromUserGesture,
     syncStoreSnapshot,
+    capturePublishContext,
     publishSnapshot,
     disarm,
     handleVisibilityChange,

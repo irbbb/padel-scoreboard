@@ -1,5 +1,9 @@
 import { createKeepAliveAudioBlobUrl } from './wavGenerator.js';
-import { createAppController } from './appController.js';
+import {
+  createAppController,
+  createGuardedStorage,
+  formatDiagTime,
+} from './appController.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -63,7 +67,13 @@ function renderReadOnlyBanner(vm) {
 function renderErrorBanners(vm) {
   const errors = [];
   if (vm.lastSaveError) errors.push(`Save failed (previous score preserved): ${vm.lastSaveError}`);
-  if (vm.lastPublishError) errors.push(`Wrist publish failed (score saved — tap Re-link Wrist): ${vm.lastPublishError}`);
+  if (vm.lastPublishError) {
+    if (vm.screen === 'LIVE') {
+      errors.push(`Wrist publish failed (score saved — tap Re-link Wrist): ${vm.lastPublishError}`);
+    } else {
+      errors.push(`Final score was saved, but the band display failed to update: ${vm.lastPublishError}`);
+    }
+  }
   if (vm.actionError) errors.push(vm.actionError);
   if (errors.length === 0) return '';
 
@@ -117,7 +127,7 @@ function renderMenuPanel(vm) {
       : vm.diagEntries
           .map(
             (e) =>
-              `<div>${escapeHtml(new Date(e.t).toISOString().slice(11, 19))} · ${escapeHtml(e.action)} · ${escapeHtml(e.audioState)}${
+              `<div>${escapeHtml(formatDiagTime(e.t))} · ${escapeHtml(e.action)} · ${escapeHtml(e.audioState)}${
                 e.revision !== null ? ` · #${e.revision}` : ''
               }${e.detail ? ` · ${escapeHtml(e.detail)}` : ''}</div>`
           )
@@ -180,7 +190,7 @@ function renderLiveScreen(vm) {
     <section class="card" data-screen="LIVE">
       <div class="score-header">
         <span>Sets ${s.sets[0]}-${s.sets[1]} ${vm.setLines.length ? `(${escapeHtml(vm.setLines.join(', '))})` : ''}</span>
-        <span>${escapeHtml(vm.durationText)} · #${s.revision}</span>
+        <span><span data-duration-text>${escapeHtml(vm.durationText)}</span> · #${s.revision}</span>
       </div>
 
       ${s.changeEndsAlert ? `<div class="swap-alert">CHANGE ENDS (SWAP)</div>` : ''}
@@ -376,10 +386,24 @@ function boot() {
   const wavUrl = createKeepAliveAudioBlobUrl();
   let copyFeedback = '';
 
+  const storage = createGuardedStorage(() => window.localStorage);
+  let locks = null;
+  try {
+    locks = navigator.locks ?? null;
+  } catch {
+    locks = null;
+  }
+  let mediaSession = null;
+  try {
+    mediaSession = navigator.mediaSession ?? null;
+  } catch {
+    mediaSession = null;
+  }
+
   const controller = createAppController({
-    storage: window.localStorage,
-    locks: navigator.locks ?? null,
-    mediaSession: navigator.mediaSession ?? null,
+    storage,
+    locks,
+    mediaSession,
     createAudio: () => {
       const el = new Audio(wavUrl);
       el.preload = 'auto';
@@ -387,6 +411,13 @@ function boot() {
       return el;
     },
     onUpdate: (vm) => render(vm),
+    onDurationTick: (durationText) => {
+      // Update duration text in place so active score buttons & focus are never replaced mid-press
+      const durationEl = root.querySelector('[data-duration-text]');
+      if (durationEl && durationText !== null) {
+        durationEl.textContent = durationText;
+      }
+    },
   });
 
   function render(vm) {
