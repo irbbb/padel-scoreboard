@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MATCH_STORAGE_KEY } from '../src/core/matchStore.js';
+import { HISTORY_STORAGE_KEY } from '../src/core/matchHistory.js';
 import {
   createAppController,
   createGuardedStorage,
@@ -14,10 +15,14 @@ import { DEFAULTS_STORAGE_KEY } from '../src/app/defaultsStore.js';
 function createMemoryStorage() {
   const data = new Map();
   let failNextSet = null;
+  let failHistorySet = null;
   let failGet = null;
   return {
     setFailNextSet(err) {
       failNextSet = err;
+    },
+    setFailHistorySet(err) {
+      failHistorySet = err;
     },
     setFailGet(err) {
       failGet = err;
@@ -37,6 +42,9 @@ function createMemoryStorage() {
         const err = failNextSet;
         failNextSet = null;
         throw err;
+      }
+      if (failHistorySet && k === HISTORY_STORAGE_KEY) {
+        throw failHistorySet;
       }
       data.set(k, String(v));
     },
@@ -670,4 +678,294 @@ test('Amateur rules: defaults migration, watch server pick, ignored Center, stal
   assert.equal(JSON.parse(storage.getItem(DEFAULTS_STORAGE_KEY)).scoringMode, 'GP');
 
   await ctrl.handlePageHideOrFreeze();
+});
+
+test('Epic 5 E2E Gate: finish from wrist -> force archive quota failure -> reload -> New Match preserves finished copy until archived or explicitly discarded', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const audioH = createSimpleAudioHarness();
+  const ms = createSimpleMediaSession();
+  let clock = Date.UTC(2026, 4, 2, 18, 0, 0);
+  let idSeq = 0;
+
+  const ctrl1 = createAppController({
+    storage,
+    locks,
+    createAudio: audioH.createAudio,
+    mediaSession: ms,
+    createMatchId: () => `m-e2e-${++idSeq}`,
+    now: () => clock,
+  });
+
+  await ctrl1.init();
+  ctrl1.setSetupInitialServer(0);
+  await ctrl1.startMatch({ linkWrist: true });
+  assert.equal(ctrl1.getViewModel().wrist.status, 'ARMED');
+
+  // Score 47 points to reach match point (6-0, 5-0, 40-0)
+  for (let i = 0; i < 47; i += 1) {
+    clock += 2000;
+    await ctrl1.scorePoint('A');
+  }
+
+  // Force history quota failure right before wrist scores winning point #48!
+  storage.setFailHistorySet(new Error('QuotaExceededError: history full'));
+  clock += 2000;
+  ms.handlers.get('previoustrack')();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  let vm = ctrl1.getViewModel();
+  assert.equal(vm.screen, 'MATCH_OVER');
+  assert.equal(vm.state.status, 'WON');
+  assert.equal(vm.currentTerminalArchived, false);
+  assert.match(vm.history.error, /Match saved on this device\. History update failed/);
+  assert.ok(vm.matchOverAnalytics);
+  // Export still works while unarchived
+  const exp = ctrl1.getExportData({ source: 'current' }, 'json');
+  assert.equal(exp.ok, true);
+  assert.equal(JSON.parse(exp.content).match.matchId, 'm-e2e-1');
+
+  // Simulate full reload while quota is still failing
+  await ctrl1.handlePageHideOrFreeze('pagehide');
+  const ctrl2 = createAppController({
+    storage,
+    locks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => `m-e2e-${++idSeq}`,
+    now: () => clock,
+  });
+  await ctrl2.init();
+
+  vm = ctrl2.getViewModel();
+  assert.equal(vm.screen, 'MATCH_OVER');
+  assert.equal(vm.record.matchId, 'm-e2e-1');
+  assert.equal(vm.currentTerminalArchived, false);
+
+  // Tap New Match -> Start Match MUST NOT destroy the unarchived finished copy!
+  assert.equal(ctrl2.openReplacementSetup(), true);
+  const blocked = await ctrl2.startMatch({ linkWrist: false });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.stage, 'archive');
+  assert.equal(ctrl2.getViewModel().screen, 'SETUP');
+  assert.equal(ctrl2.getViewModel().archiveBlockedDraft, true);
+  assert.equal(ctrl2.getViewModel().record.matchId, 'm-e2e-1'); // Preserved!
+
+  // Quota clears -> Retry Save to History archives exact snapshot -> Start Match succeeds!
+  storage.setFailHistorySet(null);
+  const retry = ctrl2.retryArchiveCurrentMatch();
+  assert.equal(retry.ok, true);
+  assert.equal(ctrl2.getViewModel().currentTerminalArchived, true);
+  assert.equal(ctrl2.getViewModel().archiveBlockedDraft, false);
+
+  const started = await ctrl2.startMatch({ linkWrist: false });
+  assert.equal(started.ok, true);
+  assert.equal(ctrl2.getViewModel().record.matchId, 'm-e2e-2');
+  assert.equal(ctrl2.getViewModel().history.count, 1);
+  assert.equal(ctrl2.getViewModel().history.items[0].matchId, 'm-e2e-1');
+  await ctrl2.handlePageHideOrFreeze();
+});
+
+test('Epic 5: Undo/Resume suppresses stale history if removal fails; Delete blocked while open on Match Over; wrist win preserves History Detail & export', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const audioH = createSimpleAudioHarness();
+  const ms = createSimpleMediaSession();
+  let clock = Date.UTC(2026, 4, 3, 18, 0, 0);
+  let idSeq = 0;
+
+  const ctrl = createAppController({
+    storage,
+    locks,
+    createAudio: audioH.createAudio,
+    mediaSession: ms,
+    createMatchId: () => `m-hist-${++idSeq}`,
+    now: () => clock,
+  });
+
+  await ctrl.init();
+  ctrl.setSetupInitialServer(0);
+  await ctrl.startMatch({ linkWrist: false });
+  clock += 5000;
+  await ctrl.scorePoint('E');
+  clock += 5000;
+  await ctrl.finishNow();
+
+  // Archived automatically, but Delete is disabled while still open on Match Over
+  assert.equal(ctrl.getViewModel().history.count, 1);
+  assert.equal(ctrl.getViewModel().history.items[0].canDelete, false);
+  const delBlocked = ctrl.deleteHistoryMatch('m-hist-1');
+  assert.equal(delBlocked.ok, false);
+
+  // Resume while history removal fails -> stale history row is SUPPRESSED while ACTIVE!
+  storage.setFailHistorySet(new Error('Temp write error'));
+  await ctrl.resume();
+  assert.equal(ctrl.getViewModel().screen, 'LIVE');
+  assert.equal(ctrl.getViewModel().history.count, 0); // Suppressed!
+
+  // Finish again after storage recovers -> re-archives cleanly, then start Match 2
+  storage.setFailHistorySet(null);
+  clock += 5000;
+  await ctrl.finishNow();
+  assert.equal(ctrl.getViewModel().history.count, 1);
+
+  ctrl.openReplacementSetup();
+  ctrl.setSetupInitialServer(0);
+  await ctrl.startMatch({ linkWrist: true });
+  assert.equal(ctrl.getViewModel().record.matchId, 'm-hist-2');
+  assert.equal(ctrl.getViewModel().wrist.status, 'ARMED');
+
+  // Score 47 points in Match 2, then open History and inspect archived Match 1 while wrist stays ARMED!
+  for (let i = 0; i < 47; i += 1) {
+    clock += 1000;
+    await ctrl.scorePoint('A');
+  }
+  ctrl.openHistory();
+  assert.equal(ctrl.getViewModel().screen, 'HISTORY');
+  assert.equal(ctrl.getViewModel().wrist.status, 'ARMED');
+  assert.equal(ctrl.inspectHistoryMatch('m-hist-1'), true);
+  assert.equal(ctrl.getViewModel().screen, 'HISTORY_DETAIL');
+
+  const exportMatch1Before = ctrl.getExportData({ source: 'history', matchId: 'm-hist-1' }, 'csv').content;
+
+  // Wrist scores winning point #48 in Match 2 WHILE user is inspecting Match 1!
+  clock += 1000;
+  ms.handlers.get('previoustrack')();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Inspection screen stays on Match 1, Match 1 export bytes are identical, and Match 2 is archived!
+  assert.equal(ctrl.getViewModel().screen, 'HISTORY_DETAIL');
+  assert.equal(ctrl.getViewModel().history.inspectedRecord.matchId, 'm-hist-1');
+  assert.equal(
+    ctrl.getExportData({ source: 'history', matchId: 'm-hist-1' }, 'csv').content,
+    exportMatch1Before
+  );
+  assert.equal(ctrl.getViewModel().history.count, 2);
+
+  // Deleting Match 1 (no longer active key) succeeds and returns to History list
+  const delOk = ctrl.deleteHistoryMatch('m-hist-1');
+  assert.equal(delOk.ok, true);
+  assert.equal(ctrl.getViewModel().screen, 'HISTORY');
+  assert.equal(ctrl.getViewModel().history.count, 1);
+
+  // Closing History reveals the newly WON Match 2 on Match Over!
+  ctrl.closeHistory();
+  assert.equal(ctrl.getViewModel().screen, 'MATCH_OVER');
+  assert.equal(ctrl.getViewModel().record.matchId, 'm-hist-2');
+  assert.equal(ctrl.getViewModel().state.status, 'WON');
+
+  // Cross-tab storage event on HISTORY_STORAGE_KEY refreshes inspected view cleanly if deleted externally
+  ctrl.openHistory();
+  ctrl.inspectHistoryMatch('m-hist-2');
+  storage.clearAll();
+  ctrl.handleStorageEvent(HISTORY_STORAGE_KEY);
+  assert.equal(ctrl.getViewModel().screen, 'HISTORY');
+  assert.equal(ctrl.getViewModel().history.count, 0);
+
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('Epic 5 Regressions (P1/P2): rally-mismatch blocks replacement, failed re-archive hides stale finish, and matchId="active" exports history row', async () => {
+  const T0 = Date.UTC(2026, 4, 4, 18, 0, 0);
+
+  // 1. P1: Active key has rally E, history has same metadata with rally B, history writes fail -> New Match blocked!
+  const storage1 = createMemoryStorage();
+  const baseE = {
+    schemaVersion: 1,
+    matchId: 'm-mismatch',
+    revision: 3,
+    config: { scoringMode: 'AD', format: 'BO3', decidingSet: 'NORMAL', initialServer: 0 },
+    startTimeMs: T0,
+    finishTimeMs: T0 + 5000,
+    status: 'FINISHED_MANUAL',
+    nextEventId: 2,
+    events: [{ id: 1, t: T0 + 1000, code: 'E' }],
+  };
+  const copyB = { ...baseE, events: [{ id: 1, t: T0 + 1000, code: 'B' }] };
+  storage1.setRaw(MATCH_STORAGE_KEY, JSON.stringify(baseE));
+  storage1.setRaw(HISTORY_STORAGE_KEY, JSON.stringify({ schemaVersion: 1, matches: [copyB] }));
+  storage1.setFailHistorySet(new Error('QuotaExceeded'));
+
+  const c1 = createAppController({
+    storage: storage1,
+    locks: createSharedMockLocks(),
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-new-1',
+    now: () => T0 + 10_000,
+  });
+  await c1.init();
+  assert.equal(c1.getViewModel().currentTerminalArchived, false);
+  // Stale copyB with mismatched rally is also hidden from visible history while baseE is open!
+  assert.equal(c1.getViewModel().history.count, 0);
+  c1.openReplacementSetup();
+  const blocked = await c1.startMatch({ linkWrist: false });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.stage, 'archive');
+  assert.equal(c1.getViewModel().record.events[0].code, 'E');
+  await c1.handlePageHideOrFreeze();
+
+  // 2. P2: Failed re-archive after Resume + 2nd rally + Finish keeps stale rev 3 hidden from History
+  const storage2 = createMemoryStorage();
+  let clock2 = T0;
+  const c2 = createAppController({
+    storage: storage2,
+    locks: createSharedMockLocks(),
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-rearchive',
+    now: () => clock2,
+  });
+  await c2.init();
+  c2.setSetupInitialServer(0);
+  await c2.startMatch({ linkWrist: false });
+  clock2 += 1000;
+  await c2.scorePoint('E');
+  clock2 += 1000;
+  await c2.finishNow(); // rev 3 archived
+  assert.equal(c2.getViewModel().history.count, 1);
+
+  storage2.setFailHistorySet(new Error('QuotaExceeded'));
+  await c2.resume(); // rev 4 (removal fails, hidden while active)
+  clock2 += 1000;
+  await c2.scorePoint('A'); // rev 5
+  clock2 += 1000;
+  await c2.finishNow(); // rev 6 (re-archive fails!)
+
+  assert.equal(c2.getViewModel().screen, 'MATCH_OVER');
+  assert.equal(c2.getViewModel().record.revision, 6);
+  // Stale rev 3 MUST stay hidden so History cannot show rev 3 as "Currently open on Match Over"!
+  assert.equal(c2.getViewModel().history.count, 0);
+  assert.equal(c2.inspectHistoryMatch('m-rearchive'), false);
+  await c2.handlePageHideOrFreeze();
+
+  // 3. P2: Valid archived matchId="active" exports archived row, NOT the live match!
+  const storage3 = createMemoryStorage();
+  const archivedActiveId = { ...baseE, matchId: 'active' };
+  storage3.setRaw(HISTORY_STORAGE_KEY, JSON.stringify({ schemaVersion: 1, matches: [archivedActiveId] }));
+  const c3 = createAppController({
+    storage: storage3,
+    locks: createSharedMockLocks(),
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    createMatchId: () => 'm-live-other',
+    now: () => T0 + 20_000,
+  });
+  await c3.init();
+  c3.setSetupInitialServer(0);
+  await c3.startMatch({ linkWrist: false });
+  assert.equal(c3.getViewModel().record.matchId, 'm-live-other');
+
+  c3.openHistory();
+  assert.equal(c3.inspectHistoryMatch('active'), true);
+  const jsonExp = c3.getExportData({ source: 'history', matchId: 'active' }, 'json');
+  const csvExp = c3.getExportData({ source: 'history', matchId: 'active' }, 'csv');
+  assert.equal(jsonExp.ok, true);
+  assert.equal(csvExp.ok, true);
+  assert.equal(JSON.parse(jsonExp.content).match.matchId, 'active');
+  assert.equal(JSON.parse(jsonExp.content).match.events[0].code, 'E');
+  assert.match(csvExp.content, /,E,THEM,true,/);
+  await c3.handlePageHideOrFreeze();
 });

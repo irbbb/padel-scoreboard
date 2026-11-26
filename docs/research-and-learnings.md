@@ -72,6 +72,15 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 - **Watch-Selectable First Server (`initialServer: null` before first point):** Players decide who serves first with a 4-touch warmup rally on court *after* putting the phone in the bag. Allowing `config.initialServer = null` strictly while `events.length === 0` lets the watch display `WHO SERVES? #1` / `< US   THEM >`, where `Prev` (`US`) or `Next` (`THEM`) sets the opener (incrementing `revision` to `#2` without adding a point) and Center (`E`) is safely ignored until the opener is chosen.
 - **Low-Noise Side-Change Display:** Amateur matches switch ends only at set breaks and do not need odd-game `SWAP`/`SWP` alerts cluttering the phone screen or Band 9 Active's tight `artist` line (`showSwap: false` default frees characters for `S1-1 UE:12`).
 
+---
+
+## 9. `S5.1–S5.2` Match History, UE Analytics & Export Spike Learnings
+- **Simulation-Based Pre-Point Clutch Classification:** Running the pure `reducePoint()` on hypothetical `'A'` and `'B'` outcomes against pre-point `state` classifies `breakPoint` (returner wins ordinary game) and `setPoint` (either team finishes a set) identically across `AD`, `GP`, and `6–6` tie-breaks with zero duplicated rule logic. Overlapping labels are tracked per label while `clutchUeTotal` counts each unique clutch `E` event once.
+- **Exact UE Cluster Equivalence (Verified Across All 1,024 10-Point Patterns):** Merging overlapping 3-consecutive-point windows containing `>= 2` `E` events (trimmed to `[firstE .. lastE]`) is mathematically identical to grouping consecutive `E` indices where `idx[k] - idx[k-1] <= 2` and keeping groups of size `>= 2`.
+- **Ordinary Service Hold Rate Isolation:** Checking `!preState.inTieBreak` plus `(postState.games sum changed || postState.setHistory.length increased)` cleanly counts only completed ordinary service games served by US, automatically excluding incomplete games and tie-breaks.
+- **Bounded 15-Minute Elapsed Windows & History Isolation:** Clamping negative clock skew to `0`, emitting contiguous buckets `0 .. maxBucket` (with a sanity cap against huge outlier timestamps) preserves empty intermediate windows (`—`), while storing archived finished matches under a separate key (`padelScore.history.v1`, upserted by `matchId`, removed if reopened via Undo/Resume) guarantees history quota errors never block active match scoring.
+
+
 
 
 

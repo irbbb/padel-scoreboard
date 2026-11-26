@@ -1,6 +1,7 @@
 import {
   addPoint,
   correctInitialServer,
+  deriveMatchState,
   finishManual,
   resumeMatch,
   undoLastPoint,
@@ -8,6 +9,14 @@ import {
 import { formatWristDisplay } from '../core/wristDisplay.js';
 import { createMatchStore, MATCH_STORAGE_KEY } from '../core/matchStore.js';
 import { createDiagnosticLog } from '../core/diagnosticLog.js';
+import { analyzeMatch, isValidDateMs } from '../core/matchAnalytics.js';
+import { buildExportFilename, exportMatchCsv, exportMatchJson } from '../core/matchExport.js';
+import {
+  createMatchHistoryStore,
+  HISTORY_STORAGE_KEY,
+  isSameTerminalSnapshot,
+  isTerminalMatchRecord,
+} from '../core/matchHistory.js';
 import { loadMatchDefaults, saveMatchDefaults } from './defaultsStore.js';
 import { createWristBridge } from './wristBridge.js';
 
@@ -110,15 +119,25 @@ export function createAppController({
   onDurationTick = null,
 } = {}) {
   const diagLog = createDiagnosticLog({ storage, now });
+  const historyStore = createMatchHistoryStore({ storage });
   const initialDefaults = loadMatchDefaults(storage);
 
   let setupScoringMode = initialDefaults.scoringMode;
   let setupInitialServer = initialDefaults.initialServer;
   let replacementDraft = null; // { baseMatchId, baseRevision, scoringMode, initialServer } | null
+  let archiveBlockedDraft = false;
   let menuOpen = false;
   let confirmFinishOpen = false;
   let confirmClearCorruptOpen = false;
   let confirmOpenerOpen = false;
+  let historyView = null; // null | 'LIST' | 'DETAIL'
+  let inspectedMatchId = null;
+  let confirmDeleteMatchId = null;
+  let historySnapshot = historyStore.readAll();
+  let historyError = null;
+  let lastReconciledKey = null;
+  let lastReconciledMatchId = null;
+  let lastReconciledStatus = null;
   let actionError = null;
   let takeoverNotice = null;
   let initialized = false;
@@ -147,6 +166,118 @@ export function createAppController({
     }
   }
 
+  const historySummaryCache = new WeakMap();
+
+  function getCachedHistorySummary(matchRecord) {
+    let cached = historySummaryCache.get(matchRecord);
+    if (!cached) {
+      const st = deriveMatchState(matchRecord, matchRecord.finishTimeMs ?? matchRecord.startTimeMs);
+      cached = Object.freeze({
+        matchId: matchRecord.matchId,
+        status: matchRecord.status,
+        winner: st.winner,
+        scoringMode: st.scoringMode,
+        dateText: formatMatchDateText(matchRecord.finishTimeMs ?? matchRecord.startTimeMs),
+        setsText: `${st.sets[0]}-${st.sets[1]}`,
+        setLines: Object.freeze(st.setHistory.map(formatSetLine)),
+        durationText: formatDuration(st.durationSec),
+        myUePoints: st.counts.myUePoints,
+        uePctText: formatUePercent(st.myUePctOfPointsLost),
+      });
+      historySummaryCache.set(matchRecord, cached);
+    }
+    return cached;
+  }
+
+  function getVisibleHistoryMatches(activeRecord) {
+    if (!activeRecord) {
+      return historySnapshot.matches;
+    }
+    // Suppress stale archived copy while that matchId is ACTIVE (including across reload if removal failed),
+    // AND suppress any older stale finish when a newer terminal snapshot with the same matchId is open on Match Over.
+    if (activeRecord.status === 'ACTIVE') {
+      return historySnapshot.matches.filter((m) => m.matchId !== activeRecord.matchId);
+    }
+    if (isTerminalMatchRecord(activeRecord)) {
+      return historySnapshot.matches.filter(
+        (m) => m.matchId !== activeRecord.matchId || isSameTerminalSnapshot(m, activeRecord)
+      );
+    }
+    return historySnapshot.matches;
+  }
+
+  function refreshHistorySnapshot(activeRecord = store?.getSnapshot(now()).record ?? null) {
+    historySnapshot = historyStore.readAll();
+    const visible = getVisibleHistoryMatches(activeRecord);
+    if (historyView === 'DETAIL' && inspectedMatchId !== null) {
+      if (!visible.some((m) => m.matchId === inspectedMatchId)) {
+        inspectedMatchId = null;
+        confirmDeleteMatchId = null;
+        historyView = 'LIST';
+      }
+    }
+    if (confirmDeleteMatchId !== null && !visible.some((m) => m.matchId === confirmDeleteMatchId)) {
+      confirmDeleteMatchId = null;
+    }
+  }
+
+  /**
+   * Single authoritative post-commit reconciliation between activeMatch and padelScore.history.v1.
+   * Runs under the already-held Web Lock on startup/takeover and after every phone or wrist save.
+   */
+  function reconcileActiveWithHistory(snapshot) {
+    if (snapshot.role !== 'WRITER' || snapshot.storageStatus !== 'READY' || !snapshot.record) {
+      return;
+    }
+    const rec = snapshot.record;
+    const key = `${rec.matchId}:${rec.status}:${rec.revision}`;
+
+    if (isTerminalMatchRecord(rec)) {
+      if (lastReconciledKey === key && historyError === null) {
+        return;
+      }
+      lastReconciledKey = key;
+      lastReconciledMatchId = rec.matchId;
+      lastReconciledStatus = rec.status;
+
+      if (historyStore.hasExactSnapshot(rec)) {
+        historyError = null;
+        archiveBlockedDraft = false;
+        refreshHistorySnapshot(rec);
+        return;
+      }
+
+      const res = historyStore.upsertMatch(rec);
+      if (res.ok && res.archivedExact) {
+        historyError = null;
+        archiveBlockedDraft = false;
+      } else {
+        historyError = `Match saved on this device. History update failed: ${toErrorMessage(res.error)}`;
+      }
+      refreshHistorySnapshot(rec);
+      return;
+    }
+
+    // ACTIVE match: only check history on first sight of matchId or transition from terminal -> ACTIVE (Undo/Resume)
+    const needsActiveCheck =
+      lastReconciledMatchId !== rec.matchId || lastReconciledStatus !== 'ACTIVE';
+    lastReconciledKey = key;
+    lastReconciledMatchId = rec.matchId;
+    lastReconciledStatus = 'ACTIVE';
+
+    if (!needsActiveCheck) {
+      return;
+    }
+
+    const rem = historyStore.removeMatch(rec.matchId);
+    if (rem.ok) {
+      historyError = null;
+    } else {
+      historyError = `History sync warning (active match unaffected): ${toErrorMessage(rem.error)}`;
+    }
+    refreshHistorySnapshot(rec);
+  }
+
   function reconcileDraft(snapshot) {
     if (!replacementDraft) return;
     const valid =
@@ -158,6 +289,7 @@ export function createAppController({
       snapshot.record.revision === replacementDraft.baseRevision;
     if (!valid) {
       replacementDraft = null;
+      archiveBlockedDraft = false;
     }
   }
 
@@ -177,6 +309,10 @@ export function createAppController({
         confirmFinishOpen = false;
         confirmClearCorruptOpen = false;
         confirmOpenerOpen = false;
+        confirmDeleteMatchId = null;
+        lastReconciledKey = null;
+        lastReconciledMatchId = null;
+        lastReconciledStatus = null;
       } else {
         takeoverNotice = null;
       }
@@ -189,6 +325,11 @@ export function createAppController({
       }
       if (wristBridge) {
         wristBridge.syncStoreSnapshot(snapshot);
+      }
+      if (snapshot.role === 'WRITER' && snapshot.storageStatus === 'READY' && snapshot.record) {
+        reconcileActiveWithHistory(snapshot);
+      } else {
+        refreshHistorySnapshot(snapshot.record);
       }
       emitUpdate();
     },
@@ -265,7 +406,13 @@ export function createAppController({
     },
   });
 
-  function determineScreen(snapshot) {
+  function formatMatchDateText(timestampMs) {
+    if (!isValidDateMs(timestampMs)) return 'Undated';
+    const iso = new Date(timestampMs).toISOString();
+    return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+  }
+
+  function determineBaseScreen(snapshot) {
     if (snapshot.storageStatus === 'UNREAD') return 'LOADING';
     if (snapshot.storageStatus === 'READ_ERROR') return 'READ_ERROR';
     if (snapshot.storageStatus === 'CORRUPT') return 'CORRUPT';
@@ -290,10 +437,24 @@ export function createAppController({
   function getViewModel(nowMs = now()) {
     const snapshot = store.getSnapshot(nowMs);
     const wrist = wristBridge.getStatus();
-    const screen = determineScreen(snapshot);
+    const baseScreen = determineBaseScreen(snapshot);
     const isWriter = snapshot.role === 'WRITER';
     const state = snapshot.state;
     const record = snapshot.record;
+
+    const visibleHistory = getVisibleHistoryMatches(record);
+    let screen = baseScreen;
+    let inspectedRecord = null;
+    if (baseScreen !== 'LOADING' && historyView === 'DETAIL' && inspectedMatchId !== null) {
+      inspectedRecord = visibleHistory.find((m) => m.matchId === inspectedMatchId) ?? null;
+      if (inspectedRecord) {
+        screen = 'HISTORY_DETAIL';
+      } else {
+        screen = 'HISTORY';
+      }
+    } else if (baseScreen !== 'LOADING' && historyView === 'LIST') {
+      screen = 'HISTORY';
+    }
 
     let wristPreview = null;
     if (state) {
@@ -308,7 +469,7 @@ export function createAppController({
     const activeInitialServer = replacementDraft ? replacementDraft.initialServer : setupInitialServer;
 
     let readOnlyReason = null;
-    if (!isWriter && screen !== 'LOADING') {
+    if (!isWriter && baseScreen !== 'LOADING') {
       if (snapshot.lockStatus === 'BUSY') {
         readOnlyReason = 'Another tab or installed PWA holds the active match.';
       } else if (snapshot.lockStatus === 'UNAVAILABLE') {
@@ -320,12 +481,53 @@ export function createAppController({
       }
     }
 
+    let matchOverAnalytics = null;
+    if (screen === 'MATCH_OVER' && record && isTerminalMatchRecord(record)) {
+      try {
+        matchOverAnalytics = analyzeMatch(record, record.finishTimeMs ?? record.startTimeMs);
+      } catch {
+        matchOverAnalytics = null;
+      }
+    }
+
+    let inspectedAnalytics = null;
+    if (screen === 'HISTORY_DETAIL' && inspectedRecord) {
+      try {
+        inspectedAnalytics = analyzeMatch(
+          inspectedRecord,
+          inspectedRecord.finishTimeMs ?? inspectedRecord.startTimeMs
+        );
+      } catch {
+        inspectedAnalytics = null;
+      }
+    }
+
+    const activeMatchId = record?.matchId ?? null;
+    const historyItems = Object.freeze(
+      visibleHistory.map((m) => {
+        const base = getCachedHistorySummary(m);
+        const isCurrentlyOpenActive = Boolean(activeMatchId && m.matchId === activeMatchId);
+        return Object.freeze({
+          ...base,
+          isCurrentlyOpenActive,
+          canDelete: Boolean(isWriter && !isCurrentlyOpenActive),
+        });
+      })
+    );
+
+    const currentTerminalArchived = Boolean(
+      record && isTerminalMatchRecord(record) && historyStore.hasExactSnapshot(record)
+    );
+
     const diagRead = diagLog.readAll();
 
     return Object.freeze({
       screen,
+      baseScreen,
       isWriter,
       isReplacementSetup: screen === 'SETUP' && replacementDraft !== null,
+      archiveBlockedDraft: Boolean(screen === 'SETUP' && replacementDraft !== null && archiveBlockedDraft),
+      currentTerminalArchived,
       role: snapshot.role,
       lockStatus: snapshot.lockStatus,
       storageStatus: snapshot.storageStatus,
@@ -342,6 +544,26 @@ export function createAppController({
       setLines: state ? state.setHistory.map(formatSetLine) : [],
       canUndo: Boolean(isWriter && record && record.events.length > 0 && record.status !== 'FINISHED_MANUAL'),
       canResume: Boolean(isWriter && record && record.status === 'FINISHED_MANUAL'),
+      matchOverAnalytics,
+      history: Object.freeze({
+        status: historySnapshot.status,
+        corruptCount: historySnapshot.corruptCount,
+        count: historyItems.length,
+        items: historyItems,
+        error: historyError,
+        inspectedRecord,
+        inspectedAnalytics,
+        inspectedDateText: inspectedRecord
+          ? formatMatchDateText(inspectedRecord.finishTimeMs ?? inspectedRecord.startTimeMs)
+          : '',
+        inspectedCanDelete: Boolean(
+          isWriter && inspectedRecord && inspectedRecord.matchId !== activeMatchId
+        ),
+        inspectedIsOpenActive: Boolean(
+          inspectedRecord && activeMatchId && inspectedRecord.matchId === activeMatchId
+        ),
+        confirmDeleteMatchId,
+      }),
       corruptRaw: snapshot.corruptRaw,
       corruptError: snapshot.corruptError,
       storageReadError: snapshot.storageReadError,
@@ -403,10 +625,12 @@ export function createAppController({
 
   /**
    * Starts a new match from SETUP (empty storage or validated replacement draft).
+   * Before replacing a finished match, verifies that history contains that exact terminal snapshot
+   * unless allowDiscardUnarchived is explicitly true.
    * Calls store.startNewMatch() synchronously; if persistence succeeds and linkWrist is true,
    * calls wristBridge.linkFromUserGesture() synchronously in the same user gesture!
    */
-  function startMatch({ linkWrist = true } = {}) {
+  function startMatch({ linkWrist = true, allowDiscardUnarchived = false } = {}) {
     actionError = null;
     const nowMs = now();
     const snap = store.getSnapshot(nowMs);
@@ -426,9 +650,23 @@ export function createAppController({
         snap.record.revision === replacementDraft.baseRevision;
       if (!draftMatches) {
         replacementDraft = null;
+        archiveBlockedDraft = false;
         actionError = 'Match state changed; confirm New Match again before replacing.';
         emitUpdate();
         return Promise.resolve({ ok: false, error: new Error(actionError) });
+      }
+
+      if (!allowDiscardUnarchived && !historyStore.hasExactSnapshot(snap.record)) {
+        const arch = historyStore.upsertMatch(snap.record);
+        refreshHistorySnapshot(snap.record);
+        if (!arch.ok || !arch.archivedExact) {
+          archiveBlockedDraft = true;
+          historyError = `Match saved on this device. History update failed: ${toErrorMessage(arch.error)}`;
+          emitUpdate();
+          return Promise.resolve({ ok: false, stage: 'archive', error: arch.error });
+        }
+        historyError = null;
+        archiveBlockedDraft = false;
       }
     } else if (snap.storageStatus !== 'EMPTY') {
       actionError = 'Resolve storage issue before starting a new match.';
@@ -464,6 +702,8 @@ export function createAppController({
     }
 
     replacementDraft = null;
+    archiveBlockedDraft = false;
+    historyError = null;
     menuOpen = false;
     confirmFinishOpen = false;
     confirmOpenerOpen = false;
@@ -542,6 +782,7 @@ export function createAppController({
     if (snap.role !== 'WRITER' || snap.storageStatus !== 'READY' || !snap.record || snap.record.status === 'ACTIVE') {
       return false;
     }
+    archiveBlockedDraft = false;
     replacementDraft = {
       baseMatchId: snap.record.matchId,
       baseRevision: snap.record.revision,
@@ -554,8 +795,162 @@ export function createAppController({
 
   function cancelReplacementSetup() {
     replacementDraft = null;
+    archiveBlockedDraft = false;
     actionError = null;
     emitUpdate();
+  }
+
+  function retryArchiveCurrentMatch() {
+    actionError = null;
+    const snap = store.getSnapshot(now());
+    if (snap.role !== 'WRITER') {
+      historyError = 'Read-only mode cannot save match history.';
+      emitUpdate();
+      return { ok: false, error: new Error(historyError) };
+    }
+    if (snap.storageStatus !== 'READY' || !isTerminalMatchRecord(snap.record)) {
+      // Match was reopened or replaced before retry clicked: never archive an ACTIVE match!
+      historyError = null;
+      archiveBlockedDraft = false;
+      emitUpdate();
+      return { ok: false, stale: true, error: new Error('No finished active match to archive') };
+    }
+
+    const res = historyStore.upsertMatch(snap.record);
+    refreshHistorySnapshot(snap.record);
+    if (res.ok && res.archivedExact) {
+      historyError = null;
+      archiveBlockedDraft = false;
+    } else {
+      historyError = `Match saved on this device. History update failed: ${toErrorMessage(res.error)}`;
+    }
+    emitUpdate();
+    return res;
+  }
+
+  function openHistory() {
+    actionError = null;
+    refreshHistorySnapshot();
+    historyView = 'LIST';
+    inspectedMatchId = null;
+    confirmDeleteMatchId = null;
+    emitUpdate();
+  }
+
+  function closeHistory() {
+    actionError = null;
+    historyView = null;
+    inspectedMatchId = null;
+    confirmDeleteMatchId = null;
+    emitUpdate();
+  }
+
+  function inspectHistoryMatch(matchId) {
+    actionError = null;
+    refreshHistorySnapshot();
+    const visible = getVisibleHistoryMatches(store.getSnapshot(now()).record);
+    if (!visible.some((m) => m.matchId === matchId)) {
+      historyView = 'LIST';
+      inspectedMatchId = null;
+      confirmDeleteMatchId = null;
+      emitUpdate();
+      return false;
+    }
+    historyView = 'DETAIL';
+    inspectedMatchId = matchId;
+    confirmDeleteMatchId = null;
+    emitUpdate();
+    return true;
+  }
+
+  function backToHistoryList() {
+    actionError = null;
+    refreshHistorySnapshot();
+    historyView = 'LIST';
+    inspectedMatchId = null;
+    confirmDeleteMatchId = null;
+    emitUpdate();
+  }
+
+  function setConfirmDeleteMatchId(matchId) {
+    confirmDeleteMatchId = typeof matchId === 'string' && matchId.length > 0 ? matchId : null;
+    emitUpdate();
+  }
+
+  function deleteHistoryMatch(matchId) {
+    actionError = null;
+    const snap = store.getSnapshot(now());
+    if (snap.role !== 'WRITER') {
+      actionError = 'Read-only mode cannot delete history entries.';
+      confirmDeleteMatchId = null;
+      emitUpdate();
+      return { ok: false, error: new Error(actionError) };
+    }
+    if (snap.record && snap.record.matchId === matchId) {
+      actionError = 'Currently open on Match Over — start a New Match before deleting from history.';
+      confirmDeleteMatchId = null;
+      emitUpdate();
+      return { ok: false, error: new Error(actionError) };
+    }
+
+    const res = historyStore.removeMatch(matchId);
+    refreshHistorySnapshot(snap.record);
+    if (!res.ok) {
+      historyError = `Could not delete history entry: ${toErrorMessage(res.error)}`;
+      emitUpdate();
+      return res;
+    }
+
+    confirmDeleteMatchId = null;
+    historyError = null;
+    if (inspectedMatchId === matchId) {
+      inspectedMatchId = null;
+      historyView = 'LIST';
+    }
+    emitUpdate();
+    return res;
+  }
+
+  /**
+   * Generates CSV or JSON export data for an explicit source ('current' active/Match Over snapshot
+   * OR 'history' archived snapshot identified by matchId). Separating source from matchId ensures
+   * a valid archived matchId such as "active" never collides with the live/current match.
+   */
+  function getExportData(target = { source: 'current' }, format = 'csv') {
+    const snap = store.getSnapshot(now());
+    let targetRecord = null;
+
+    if (target && typeof target === 'object') {
+      if (target.source === 'current') {
+        targetRecord = snap.record;
+      } else if (target.source === 'history' && typeof target.matchId === 'string' && target.matchId.length > 0) {
+        const visible = getVisibleHistoryMatches(snap.record);
+        targetRecord = visible.find((m) => m.matchId === target.matchId) ?? null;
+      }
+    }
+
+    if (!targetRecord) {
+      return { ok: false, error: new Error('Match snapshot not found for export') };
+    }
+
+    try {
+      const analytics = analyzeMatch(
+        targetRecord,
+        targetRecord.finishTimeMs ?? targetRecord.startTimeMs
+      );
+      const isJson = format === 'json';
+      const content = isJson
+        ? exportMatchJson(targetRecord, analytics)
+        : exportMatchCsv(targetRecord, analytics);
+      return {
+        ok: true,
+        filename: buildExportFilename(targetRecord, isJson ? 'json' : 'csv'),
+        mimeType: isJson ? 'application/json;charset=utf-8' : 'text/csv;charset=utf-8',
+        content,
+      };
+    } catch (err) {
+      return { ok: false, error: err };
+    }
   }
 
   function relinkWrist() {
@@ -652,11 +1047,17 @@ export function createAppController({
   }
 
   function handleStorageEvent(key) {
-    if (key !== null && key !== MATCH_STORAGE_KEY) {
+    const matchTouched = key === null || key === MATCH_STORAGE_KEY;
+    const historyTouched = key === null || key === HISTORY_STORAGE_KEY;
+    if (!matchTouched && !historyTouched) {
       return;
     }
-    if (store.getSnapshot(now()).role !== 'WRITER') {
+    if (matchTouched && store.getSnapshot(now()).role !== 'WRITER') {
       store.refreshReadOnly();
+    }
+    if (historyTouched) {
+      refreshHistorySnapshot(store.getSnapshot(now()).record);
+      emitUpdate();
     }
   }
 
@@ -747,6 +1148,14 @@ export function createAppController({
     resume,
     openReplacementSetup,
     cancelReplacementSetup,
+    retryArchiveCurrentMatch,
+    openHistory,
+    closeHistory,
+    inspectHistoryMatch,
+    backToHistoryList,
+    setConfirmDeleteMatchId,
+    deleteHistoryMatch,
+    getExportData,
     relinkWrist,
     takeOverWriter,
     stepDownToReadOnly,

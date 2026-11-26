@@ -3,6 +3,9 @@ import {
   createAppController,
   createGuardedStorage,
   formatDiagTime,
+  formatDuration,
+  formatSetLine,
+  formatUePercent,
 } from './appController.js';
 
 function escapeHtml(str) {
@@ -117,6 +120,19 @@ function renderSetupScreen(vm) {
         <button class="btn btn-primary" data-action="start-match" ${disabled}>
           Start Match &amp; Link Wrist
         </button>
+        ${
+          vm.archiveBlockedDraft
+            ? `<div class="confirm-box" data-testid="archive-blocked-box">
+                 <div><strong>Previous match could not be archived to history.</strong> Export or retry saving before discarding it.</div>
+                 <div class="controls-row">
+                   <button class="btn btn-sm btn-primary" data-action="retry-archive">Retry Save to History</button>
+                   <button class="btn btn-sm" data-action="export-match" data-source="current" data-format="json">Download JSON</button>
+                 </div>
+                 <button class="btn btn-sm" data-action="export-match" data-source="current" data-format="csv">Download CSV</button>
+                 <button class="btn btn-sm btn-danger" data-action="start-match-discard">Start New Match &amp; Discard Copy</button>
+               </div>`
+            : ''
+        }
         ${
           vm.isReplacementSetup
             ? `<button class="btn" data-action="cancel-replacement">Back to Match Over</button>`
@@ -294,6 +310,149 @@ function renderLiveScreen(vm) {
   `;
 }
 
+function formatPartialScoreLine(s) {
+  const isManual = s.status === 'FINISHED_MANUAL';
+  const hasPartial =
+    isManual &&
+    (s.games[0] > 0 || s.games[1] > 0 || s.points[0] > 0 || s.points[1] > 0 || s.inTieBreak);
+  if (!hasPartial) return '';
+  return `Partial set: Games ${s.games[0]}-${s.games[1]}${s.inTieBreak ? ' (TB)' : ''}, Points ${s.pointsLabel[0]}-${s.pointsLabel[1]}`;
+}
+
+function renderAnalyticsPanel(analytics, exportSource, exportMatchId = null) {
+  if (!analytics) return '';
+  const { clutch, serveReturn, serviceHold, clusters, windows15m, unbucketedCount } = analytics;
+  const holdText =
+    serviceHold.completedOrdinaryServiceGames > 0
+      ? `${serviceHold.ordinaryServiceGamesWon}/${serviceHold.completedOrdinaryServiceGames} (${formatUePercent(serviceHold.holdRate)})`
+      : '—';
+  const matchIdAttr = exportMatchId ? ` data-match-id="${escapeHtml(exportMatchId)}"` : '';
+
+  const clusterRows =
+    clusters.length === 0
+      ? '<div class="muted">No UE clusters (2+ UEs within 3 consecutive points).</div>'
+      : clusters
+          .map(
+            (c, idx) =>
+              `<div class="cluster-item"><strong>Cluster ${idx + 1}:</strong> ${c.ueCount} UEs across pts #${c.startPointNumber}–#${c.endPointNumber} (span ${c.spanPoints}, Set ${c.setNumber} · ${escapeHtml(c.startScoreText)})</div>`
+          )
+          .join('');
+
+  const windowRows =
+    windows15m.length === 0
+      ? '<div class="muted">No timed rallies recorded yet.</div>'
+      : `<table class="analytics-table">
+           <thead>
+             <tr>
+               <th>Window</th>
+               <th>MY UE</th>
+               <th>Lost</th>
+               <th>Pts (n)</th>
+               <th>UE %</th>
+             </tr>
+           </thead>
+           <tbody>
+             ${windows15m
+               .map(
+                 (w) => `<tr>
+                   <td>${escapeHtml(w.label)}</td>
+                   <td>${w.myUePoints}</td>
+                   <td>${w.pointsLost}</td>
+                   <td>${w.totalPoints}</td>
+                   <td>${escapeHtml(formatUePercent(w.uePctOfPointsLost))}</td>
+                 </tr>`
+               )
+               .join('')}
+           </tbody>
+         </table>`;
+
+  return `
+    <div class="analytics-section" data-testid="analytics-panel">
+      <h3>UE Analytics</h3>
+
+      <div class="stat-grid">
+        <div class="stat-box">
+          <span class="sub-score-label">Clutch UEs (Unique)</span>
+          <span class="stat-value">${clutch.clutchUeTotal}</span>
+          <span class="muted">${escapeHtml(formatUePercent(clutch.clutchUePctOfPointsLost))} of ${clutch.clutchPointsLost} lost</span>
+        </div>
+        <div class="stat-box">
+          <span class="sub-score-label">Ordinary Hold Rate</span>
+          <span class="stat-value" style="font-size:19px;">${escapeHtml(holdText)}</span>
+          <span class="muted">Excludes incomplete &amp; TB</span>
+        </div>
+        <div class="stat-box">
+          <span class="sub-score-label">Serving UEs</span>
+          <span class="stat-value">${serveReturn.serving.myUePoints}</span>
+          <span class="muted">${escapeHtml(formatUePercent(serveReturn.serving.uePctOfPointsLost))} of ${serveReturn.serving.pointsLost} lost</span>
+        </div>
+        <div class="stat-box">
+          <span class="sub-score-label">Returning UEs</span>
+          <span class="stat-value">${serveReturn.returning.myUePoints}</span>
+          <span class="muted">${escapeHtml(formatUePercent(serveReturn.returning.uePctOfPointsLost))} of ${serveReturn.returning.pointsLost} lost</span>
+        </div>
+      </div>
+
+      <table class="analytics-table">
+        <thead>
+          <tr>
+            <th>Clutch Type</th>
+            <th>MY UE</th>
+            <th>Lost</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Golden Point (40-40)</td>
+            <td>${clutch.byLabel.goldenPoint.myUePoints}</td>
+            <td>${clutch.byLabel.goldenPoint.pointsLost}</td>
+            <td>${clutch.byLabel.goldenPoint.totalPoints}</td>
+          </tr>
+          <tr>
+            <td>Break Point</td>
+            <td>${clutch.byLabel.breakPoint.myUePoints}</td>
+            <td>${clutch.byLabel.breakPoint.pointsLost}</td>
+            <td>${clutch.byLabel.breakPoint.totalPoints}</td>
+          </tr>
+          <tr>
+            <td>Set Point</td>
+            <td>${clutch.byLabel.setPoint.myUePoints}</td>
+            <td>${clutch.byLabel.setPoint.pointsLost}</td>
+            <td>${clutch.byLabel.setPoint.totalPoints}</td>
+          </tr>
+          <tr>
+            <td>Tie-Break</td>
+            <td>${clutch.byLabel.tieBreak.myUePoints}</td>
+            <td>${clutch.byLabel.tieBreak.pointsLost}</td>
+            <td>${clutch.byLabel.tieBreak.totalPoints}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div>
+        <div class="muted" style="margin-bottom:6px;"><strong>UE Clusters (${clusters.length})</strong></div>
+        <div class="controls-stack">${clusterRows}</div>
+      </div>
+
+      <div>
+        <div class="muted" style="margin-bottom:6px;"><strong>15-Minute Elapsed Windows</strong></div>
+        ${windowRows}
+        ${
+          unbucketedCount > 0
+            ? `<div class="muted" style="margin-top:4px;">${unbucketedCount} rally(s) excluded from time windows due to invalid timestamp.</div>`
+            : ''
+        }
+      </div>
+
+      <div class="controls-row">
+        <button class="btn btn-sm" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="csv">Download CSV</button>
+        <button class="btn btn-sm" data-action="export-match" data-source="${escapeHtml(exportSource)}"${matchIdAttr} data-format="json">Download JSON</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderMatchOverScreen(vm) {
   const s = vm.state;
   const isManual = s.status === 'FINISHED_MANUAL';
@@ -302,10 +461,7 @@ function renderMatchOverScreen(vm) {
     : s.winner === 0
       ? 'Match Won — US'
       : 'Match Won — THEM';
-  const hasPartial = isManual && (s.games[0] > 0 || s.games[1] > 0 || s.points[0] > 0 || s.points[1] > 0 || s.inTieBreak);
-  const partialLine = hasPartial
-    ? `Partial set: Games ${s.games[0]}-${s.games[1]}${s.inTieBreak ? ' (TB)' : ''}, Points ${s.pointsLabel[0]}-${s.pointsLabel[1]}`
-    : '';
+  const partialLine = formatPartialScoreLine(s);
 
   return `
     <section class="card" data-screen="MATCH_OVER">
@@ -319,6 +475,19 @@ function renderMatchOverScreen(vm) {
         ${vm.setLines.length ? ` (${escapeHtml(vm.setLines.join(', '))})` : ''}
       </div>
       ${partialLine ? `<div class="muted">${escapeHtml(partialLine)}</div>` : ''}
+
+      ${
+        vm.history.error
+          ? `<div class="banner banner-warn" data-testid="history-error-banner">
+               <div>${escapeHtml(vm.history.error)}</div>
+               ${
+                 vm.isWriter
+                   ? `<button class="btn btn-sm btn-primary" data-action="retry-archive">Retry Save to History</button>`
+                   : ''
+               }
+             </div>`
+          : ''
+      }
 
       <div class="stat-grid">
         <div class="stat-box">
@@ -356,6 +525,158 @@ function renderMatchOverScreen(vm) {
             : ''
         }
       </div>
+
+      ${renderAnalyticsPanel(vm.matchOverAnalytics, 'current')}
+    </section>
+  `;
+}
+
+function renderHistoryScreen(vm) {
+  const h = vm.history;
+  const backLabel =
+    vm.baseScreen === 'LIVE'
+      ? 'Back to Live Match'
+      : vm.baseScreen === 'MATCH_OVER'
+        ? 'Back to Match Over'
+        : 'Back';
+
+  const statusNote =
+    h.status === 'CORRUPT' || h.status === 'READ_ERROR'
+      ? `<div class="banner banner-err">History storage is unreadable (${escapeHtml(h.status)}). Stored data was left intact.</div>`
+      : h.corruptCount > 0
+        ? `<div class="banner banner-warn">${h.corruptCount} unreadable history row(s) detected. Valid matches remain viewable/exportable; history edits are paused to preserve stored data byte-for-byte.</div>`
+        : '';
+
+  const rows =
+    h.items.length === 0
+      ? '<div class="muted">No archived matches yet. Finished matches appear here automatically.</div>'
+      : h.items
+          .map((item) => {
+            const badge =
+              item.status === 'FINISHED_MANUAL'
+                ? 'MANUAL'
+                : item.winner === 0
+                  ? 'WIN'
+                  : 'LOSS';
+            const confirmOpen = h.confirmDeleteMatchId === item.matchId;
+            return `
+              <div class="history-item" data-history-id="${escapeHtml(item.matchId)}">
+                <div class="banner-row">
+                  <strong>${badge} · Sets ${escapeHtml(item.setsText)} (${escapeHtml(item.scoringMode)})</strong>
+                  <span class="muted">${escapeHtml(item.durationText)}</span>
+                </div>
+                <div class="muted">
+                  ${escapeHtml(item.dateText)} · MY UE: ${item.myUePoints} (${escapeHtml(item.uePctText)})
+                  ${item.setLines.length ? ` · ${escapeHtml(item.setLines.join(', '))}` : ''}
+                </div>
+                ${
+                  confirmOpen
+                    ? `<div class="confirm-box">
+                         <div><strong>Delete this match from history?</strong> Export first if you want a copy.</div>
+                         <div class="controls-row">
+                           <button class="btn btn-sm" data-action="cancel-delete-history">Cancel</button>
+                           <button class="btn btn-sm btn-danger" data-action="confirm-delete-history" data-match-id="${escapeHtml(item.matchId)}">Confirm Delete</button>
+                         </div>
+                       </div>`
+                    : `<div class="controls-row">
+                         <button class="btn btn-sm btn-primary" data-action="inspect-history" data-match-id="${escapeHtml(item.matchId)}">Inspect</button>
+                         ${
+                           item.canDelete
+                             ? `<button class="btn btn-sm btn-danger" data-action="open-delete-history" data-match-id="${escapeHtml(item.matchId)}">Delete</button>`
+                             : `<button class="btn btn-sm" disabled>${item.isCurrentlyOpenActive ? 'Open on Match Over' : 'Read-Only'}</button>`
+                         }
+                       </div>`
+                }
+              </div>
+            `;
+          })
+          .join('');
+
+  return `
+    <section class="card" data-screen="HISTORY">
+      <div class="banner-row">
+        <h1>Match History (${h.count})</h1>
+        <button class="btn btn-sm" data-action="close-history">${escapeHtml(backLabel)}</button>
+      </div>
+      ${h.error ? `<div class="banner banner-err">${escapeHtml(h.error)}</div>` : ''}
+      ${statusNote}
+      <div class="controls-stack">${rows}</div>
+    </section>
+  `;
+}
+
+function renderHistoryDetailScreen(vm) {
+  const h = vm.history;
+  const rec = h.inspectedRecord;
+  const ana = h.inspectedAnalytics;
+  if (!rec || !ana) {
+    return renderHistoryScreen(vm);
+  }
+  const s = ana.summary;
+  const isManual = s.status === 'FINISHED_MANUAL';
+  const headline = isManual
+    ? 'Finished Manually'
+    : s.winner === 0
+      ? 'Match Won — US'
+      : 'Match Won — THEM';
+  const setLines = s.setHistory.map(formatSetLine);
+  const partialLine = formatPartialScoreLine(s);
+  const confirmOpen = h.confirmDeleteMatchId === rec.matchId;
+
+  return `
+    <section class="card" data-screen="HISTORY_DETAIL">
+      <div class="banner-row">
+        <button class="btn btn-sm" data-action="back-history-list">← All Matches</button>
+        <button class="btn btn-sm" data-action="close-history">${vm.baseScreen === 'LIVE' ? 'Back to Live' : 'Close'}</button>
+      </div>
+      ${h.error ? `<div class="banner banner-err" role="alert">${escapeHtml(h.error)}</div>` : ''}
+      <div class="score-header">
+        <span>${escapeHtml(h.inspectedDateText)} · ${escapeHtml(s.scoringMode)}</span>
+        <span>${escapeHtml(formatDuration(s.durationSec))} · #${s.revision}</span>
+      </div>
+      <h1>${escapeHtml(headline)}</h1>
+      <div>
+        <strong>Sets:</strong> ${s.sets[0]}-${s.sets[1]}
+        ${setLines.length ? ` (${escapeHtml(setLines.join(', '))})` : ''}
+      </div>
+      ${partialLine ? `<div class="muted">${escapeHtml(partialLine)}</div>` : ''}
+
+      <div class="stat-grid">
+        <div class="stat-box">
+          <span class="sub-score-label">Us Won (A)</span>
+          <span class="stat-value">${s.counts.ourPoints}</span>
+        </div>
+        <div class="stat-box">
+          <span class="sub-score-label">Them Other (B)</span>
+          <span class="stat-value">${s.counts.themOtherPoints}</span>
+        </div>
+        <div class="stat-box">
+          <span class="sub-score-label">My UEs (E)</span>
+          <span class="stat-value">${s.counts.myUePoints}</span>
+        </div>
+        <div class="stat-box">
+          <span class="sub-score-label">My UEs / Pts Lost</span>
+          <span class="stat-value">${escapeHtml(formatUePercent(s.myUePctOfPointsLost))}</span>
+        </div>
+      </div>
+
+      ${renderAnalyticsPanel(ana, 'history', rec.matchId)}
+
+      ${
+        h.inspectedCanDelete
+          ? confirmOpen
+            ? `<div class="confirm-box">
+                 <div><strong>Delete this match from history?</strong> Export first if you want a copy.</div>
+                 <div class="controls-row">
+                   <button class="btn btn-sm" data-action="cancel-delete-history">Cancel</button>
+                   <button class="btn btn-sm btn-danger" data-action="confirm-delete-history" data-match-id="${escapeHtml(rec.matchId)}">Confirm Delete</button>
+                 </div>
+               </div>`
+            : `<button class="btn btn-sm btn-danger" data-action="open-delete-history" data-match-id="${escapeHtml(rec.matchId)}">Delete from History</button>`
+          : h.inspectedIsOpenActive
+            ? `<div class="muted">Currently open on Match Over — start a New Match before deleting from history.</div>`
+            : ''
+      }
     </section>
   `;
 }
@@ -462,14 +783,26 @@ function boot() {
     if (vm.screen === 'LOADING') body = renderLoadingScreen();
     else if (vm.screen === 'READ_ERROR') body = renderReadErrorScreen(vm);
     else if (vm.screen === 'CORRUPT') body = renderCorruptScreen(vm);
+    else if (vm.screen === 'HISTORY') body = renderHistoryScreen(vm);
+    else if (vm.screen === 'HISTORY_DETAIL') body = renderHistoryDetailScreen(vm);
     else if (vm.screen === 'SETUP') body = renderSetupScreen(vm);
     else if (vm.screen === 'LIVE') body = renderLiveScreen(vm);
     else body = renderMatchOverScreen(vm);
 
+    const showHistoryBtn =
+      vm.screen !== 'LOADING' && vm.screen !== 'HISTORY' && vm.screen !== 'HISTORY_DETAIL';
+
     root.innerHTML = `
       <header class="topbar">
         <div class="brand">PadelScore</div>
-        <div class="pill">${vm.isWriter ? 'WRITER' : 'READ-ONLY'} · ${escapeHtml(vm.screen)}</div>
+        <div class="topbar-actions">
+          ${
+            showHistoryBtn
+              ? `<button class="btn btn-sm" data-action="open-history">History (${vm.history.count})</button>`
+              : ''
+          }
+          <div class="pill">${vm.isWriter ? 'WRITER' : 'READ-ONLY'} · ${escapeHtml(vm.screen)}</div>
+        </div>
       </header>
       ${renderReadOnlyBanner(vm)}
       ${renderWristBanner(vm)}
@@ -477,6 +810,38 @@ function boot() {
       ${copyFeedback ? `<div class="banner banner-ok">${escapeHtml(copyFeedback)}</div>` : ''}
       ${body}
     `;
+  }
+
+  function triggerDownload(source, matchId, format) {
+    const res = controller.getExportData({ source, matchId }, format);
+    if (!res.ok) {
+      copyFeedback = `Export failed: ${res.error?.message || 'Unable to generate file'}`;
+      render(controller.getViewModel());
+      return;
+    }
+    try {
+      const blob = new Blob([res.content], { type: res.mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Keep object URL alive through download initiation on Android Chrome before revoking
+      window.setTimeout(() => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // Ignore revoke errors
+        }
+      }, 10_000);
+      copyFeedback = `Download requested: ${res.filename}`;
+    } catch {
+      copyFeedback = `Download failed on this browser.`;
+    }
+    render(controller.getViewModel());
   }
 
   async function copyText(text, label) {
@@ -511,8 +876,32 @@ function boot() {
       }
     } else if (action === 'start-match') {
       controller.startMatch({ linkWrist: true });
+    } else if (action === 'start-match-discard') {
+      controller.startMatch({ linkWrist: true, allowDiscardUnarchived: true });
     } else if (action === 'cancel-replacement') {
       controller.cancelReplacementSetup();
+    } else if (action === 'retry-archive') {
+      controller.retryArchiveCurrentMatch();
+    } else if (action === 'open-history') {
+      controller.openHistory();
+    } else if (action === 'close-history') {
+      controller.closeHistory();
+    } else if (action === 'inspect-history') {
+      controller.inspectHistoryMatch(btn.dataset.matchId);
+    } else if (action === 'back-history-list') {
+      controller.backToHistoryList();
+    } else if (action === 'open-delete-history') {
+      controller.setConfirmDeleteMatchId(btn.dataset.matchId);
+    } else if (action === 'cancel-delete-history') {
+      controller.setConfirmDeleteMatchId(null);
+    } else if (action === 'confirm-delete-history') {
+      controller.deleteHistoryMatch(btn.dataset.matchId);
+    } else if (action === 'export-match') {
+      triggerDownload(
+        btn.dataset.source || 'current',
+        btn.dataset.matchId || null,
+        btn.dataset.format || 'csv'
+      );
     } else if (action === 'score') {
       controller.scorePoint(btn.dataset.code);
     } else if (action === 'undo') {
