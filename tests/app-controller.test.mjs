@@ -16,6 +16,7 @@ function createMemoryStorage() {
   const data = new Map();
   let failNextSet = null;
   let failHistorySet = null;
+  let failDefaultsSet = null;
   let failGet = null;
   return {
     setFailNextSet(err) {
@@ -23,6 +24,9 @@ function createMemoryStorage() {
     },
     setFailHistorySet(err) {
       failHistorySet = err;
+    },
+    setFailDefaultsSet(err) {
+      failDefaultsSet = err;
     },
     setFailGet(err) {
       failGet = err;
@@ -45,6 +49,9 @@ function createMemoryStorage() {
       }
       if (failHistorySet && k === HISTORY_STORAGE_KEY) {
         throw failHistorySet;
+      }
+      if (failDefaultsSet && k === DEFAULTS_STORAGE_KEY) {
+        throw failDefaultsSet;
       }
       data.set(k, String(v));
     },
@@ -968,4 +975,397 @@ test('Epic 5 Regressions (P1/P2): rally-mismatch blocks replacement, failed re-a
   assert.equal(JSON.parse(jsonExp.content).match.events[0].code, 'E');
   assert.match(csvExp.content, /,E,THEM,true,/);
   await c3.handlePageHideOrFreeze();
+});
+
+test('S4.2 Priority Trace (stalled publisher): EDIT -> Prev x2 -> Phone Cancel -> Next -> drain -> Center -> Next', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const audioH = createSimpleAudioHarness();
+  const metadataLog = [];
+  const handlers = new Map();
+  const ms = {
+    playbackState: 'none',
+    setActionHandler(action, fn) {
+      if (fn === null) handlers.delete(action);
+      else handlers.set(action, fn);
+    },
+    setPositionState() {},
+    handlers,
+    set metadata(val) {
+      this._m = val;
+      if (val) metadataLog.push({ title: val.title, artist: val.artist });
+    },
+    get metadata() {
+      return this._m ?? null;
+    },
+  };
+
+  let clock = Date.UTC(2026, 4, 5, 18, 0, 0);
+  let stallGate = null;
+  let releaseGate = null;
+
+  const ctrl = createAppController({
+    storage,
+    locks,
+    createAudio: audioH.createAudio,
+    mediaSession: ms,
+    createMatchId: () => 'm-s42-trace',
+    now: () => clock,
+    beforePublish: async () => {
+      if (stallGate) {
+        await stallGate;
+      }
+    },
+  });
+
+  await ctrl.init();
+  ctrl.setSetupInitialServer(0);
+  ctrl.setWristCenterMode('EDIT_MODE');
+  await ctrl.startMatch({ linkWrist: true });
+  clock += 1000;
+  await ctrl.scorePoint('A'); // rev 2, 15-0
+  assert.equal(ctrl.getViewModel().record.revision, 2);
+  const logCountBeforeStall = metadataLog.length;
+
+  // Stall the publish queue!
+  stallGate = new Promise((res) => {
+    releaseGate = res;
+  });
+
+  // 1. Center opens EDIT #2
+  handlers.get('pause')();
+  assert.equal(ctrl.getViewModel().editState.phase, 'PROMPT');
+  assert.equal(ctrl.getViewModel().editState.baseRevision, 2);
+
+  // 2. Press Prev TWICE: first Prev undoes to rev 3 (0-0), second Prev is ignored!
+  handlers.get('previoustrack')();
+  handlers.get('previoustrack')();
+  assert.equal(ctrl.getViewModel().record.revision, 3);
+  assert.equal(ctrl.getViewModel().record.events.length, 0);
+  assert.equal(ctrl.getViewModel().editState.phase, 'AWAITING_LIVE');
+  assert.equal(ctrl.getViewModel().editState.reason, 'UNDO');
+
+  // 3. Cancel on phone -> enters AWAITING_LIVE(INVALIDATED, #3), arrows stay blocked!
+  const cancelPromise = ctrl.cancelWristEdit();
+  assert.equal(ctrl.getViewModel().editState.phase, 'AWAITING_LIVE');
+  assert.equal(ctrl.getViewModel().editState.reason, 'INVALIDATED');
+
+  // 4. Press Next BEFORE draining -> consumed without scoring!
+  handlers.get('nexttrack')();
+  assert.equal(ctrl.getViewModel().record.revision, 3);
+  assert.equal(ctrl.getViewModel().record.events.length, 0);
+
+  // 5. Release stalled publisher -> ZERO obsolete EDIT #2 or UNDO written; ONLY EDIT OFF #3 writes!
+  stallGate = null;
+  releaseGate();
+  await cancelPromise;
+  await Promise.resolve();
+
+  const writtenDuringStall = metadataLog.slice(logCountBeforeStall);
+  assert.deepEqual(writtenDuringStall, [{ title: 'EDIT OFF #3', artist: 'TAP || FOR LIVE' }]);
+
+  // 6. Press Center -> returns to LIVE; Next arrow now scores THEM +1 (rev 4)!
+  handlers.get('play')();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(ctrl.getViewModel().editState.phase, 'LIVE');
+
+  clock += 1000;
+  handlers.get('nexttrack')();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(ctrl.getViewModel().record.revision, 4);
+  assert.deepEqual(
+    ctrl.getViewModel().record.events.map((e) => e.code),
+    ['B']
+  );
+
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('S4.2: Interruption -> Re-link restores INVALIDATED barrier, quota failure preserves PROMPT, mode switch blocks arrows until Center, and winning UE disarms', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const listenersByEl = new Map();
+  const createdAudio = [];
+  const ms = createSimpleMediaSession();
+  let clock = Date.UTC(2026, 4, 6, 18, 0, 0);
+
+  const ctrl = createAppController({
+    storage,
+    locks,
+    mediaSession: ms,
+    createMatchId: () => 'm-s42-edge',
+    now: () => clock,
+    createAudio: () => {
+      const listeners = new Map();
+      const el = {
+        paused: true,
+        ended: false,
+        error: null,
+        loop: false,
+        volume: 1,
+        duration: 10,
+        currentTime: 0,
+        addEventListener(t, fn) {
+          if (!listeners.has(t)) listeners.set(t, new Set());
+          listeners.get(t).add(fn);
+        },
+        removeEventListener(t, fn) {
+          listeners.get(t)?.delete(fn);
+        },
+        emit(t) {
+          for (const fn of [...(listeners.get(t) || [])]) fn({ type: t });
+        },
+        play() {
+          el.paused = false;
+          return Promise.resolve();
+        },
+        pause() {
+          el.paused = true;
+        },
+      };
+      listenersByEl.set(el, listeners);
+      createdAudio.push(el);
+      return el;
+    },
+  });
+
+  await ctrl.init();
+  ctrl.setSetupInitialServer(0);
+  ctrl.setWristCenterMode('EDIT_MODE');
+  await ctrl.startMatch({ linkWrist: true });
+  await ctrl.scorePoint('A'); // rev 2
+
+  // 1. Open EDIT #2 -> quota error on Prev keeps PROMPT #2 intact for retry
+  ms.handlers.get('pause')();
+  assert.equal(ctrl.getViewModel().editState.phase, 'PROMPT');
+  storage.setFailNextSet(new Error('QuotaExceeded'));
+  ms.handlers.get('previoustrack')();
+  assert.equal(ctrl.getViewModel().record.revision, 2);
+  assert.equal(ctrl.getViewModel().editState.phase, 'PROMPT');
+
+  // 2. OS audio interruption while PROMPT is open -> Re-link restores AWAITING_LIVE(INVALIDATED)
+  const el1 = createdAudio.at(-1);
+  el1.paused = true;
+  el1.emit('pause');
+  assert.equal(ctrl.getViewModel().wrist.status, 'INTERRUPTED');
+
+  await ctrl.relinkWrist();
+  assert.equal(ctrl.getViewModel().wrist.status, 'ARMED');
+  assert.equal(ctrl.getViewModel().editState.phase, 'AWAITING_LIVE');
+  assert.equal(ctrl.getViewModel().editState.reason, 'INVALIDATED');
+  assert.equal(ms.metadata.title, 'EDIT OFF #2');
+
+  // Arrows swallowed until Center
+  ms.handlers.get('previoustrack')();
+  assert.equal(ctrl.getViewModel().record.revision, 2);
+  ms.handlers.get('pause')(); // Center -> LIVE
+  assert.equal(ctrl.getViewModel().editState.phase, 'LIVE');
+
+  // 3. Mode switch EDIT_MODE -> ONE_TAP_UE while PROMPT open blocks arrows until Center (and Center does NOT score MY UE!)
+  ms.handlers.get('pause')();
+  assert.equal(ctrl.getViewModel().editState.phase, 'PROMPT');
+  ctrl.setWristCenterMode('ONE_TAP_UE');
+  assert.equal(ctrl.getViewModel().editState.phase, 'AWAITING_LIVE');
+  ms.handlers.get('previoustrack')(); // Swallowed!
+  assert.equal(ctrl.getViewModel().record.revision, 2);
+  ms.handlers.get('pause')(); // Center returns to LIVE (does NOT log MY UE!)
+  assert.equal(ctrl.getViewModel().editState.phase, 'LIVE');
+  assert.equal(ctrl.getViewModel().record.revision, 2);
+
+  // 4. Switch back to EDIT_MODE, play to match point for THEM (47 B points + undo A -> 47 B), then EDIT -> Next (MY UE) wins match & disarms!
+  ctrl.setWristCenterMode('EDIT_MODE');
+  await ctrl.undo(); // back to 0-0
+  for (let i = 0; i < 47; i += 1) {
+    clock += 1000;
+    await ctrl.scorePoint('B');
+  }
+  ms.handlers.get('pause')(); // Open EDIT prompt
+  assert.equal(ctrl.getViewModel().editState.phase, 'PROMPT');
+  ms.handlers.get('nexttrack')(); // MY UE -> THEM wins match!
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(ctrl.getViewModel().screen, 'MATCH_OVER');
+  assert.equal(ctrl.getViewModel().state.status, 'WON');
+  assert.equal(ctrl.getViewModel().state.winner, 1);
+  assert.equal(ctrl.getViewModel().editState.phase, 'LIVE');
+  assert.equal(ctrl.getViewModel().wrist.status, 'DISARMED');
+  assert.ok(ms.metadata.title.startsWith('LOSS 0-2'));
+  assert.equal(createdAudio.at(-1).paused, true);
+
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('S4.2 review regression (P1): writer takeover and page restore reload saved wristCenterMode from storage', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const clock = Date.UTC(2026, 4, 7, 18, 0, 0);
+
+  const msA = createSimpleMediaSession();
+  const msB = createSimpleMediaSession();
+
+  const tabA = createAppController({
+    storage,
+    locks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: msA,
+    createMatchId: () => 'm-takeover-mode',
+    now: () => clock,
+  });
+  const tabB = createAppController({
+    storage,
+    locks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: msB,
+    createMatchId: () => 'm-unused',
+    now: () => clock,
+  });
+
+  // Both tabs start with ONE_TAP_UE saved/default
+  await tabA.init();
+  await tabB.init();
+  assert.equal(tabA.getViewModel().isWriter, true);
+  assert.equal(tabB.getViewModel().isWriter, false);
+  assert.equal(tabA.getViewModel().wristCenterMode, 'ONE_TAP_UE');
+  assert.equal(tabB.getViewModel().wristCenterMode, 'ONE_TAP_UE');
+
+  // Read-only Tab B cannot mutate wristCenterMode or defaults storage
+  const roRes = tabB.setWristCenterMode('EDIT_MODE');
+  assert.equal(roRes.ok, false);
+  assert.equal(roRes.persisted, false);
+  assert.equal(tabB.getViewModel().wristCenterMode, 'ONE_TAP_UE');
+  assert.match(tabB.getViewModel().actionError, /Read-only/i);
+
+  // Tab A starts match with known server, switches to EDIT_MODE, and steps down
+  tabA.setSetupInitialServer(0);
+  await tabA.startMatch({ linkWrist: false });
+  const modeRes = tabA.setWristCenterMode('EDIT_MODE');
+  assert.equal(modeRes.ok, true);
+  assert.equal(modeRes.persisted, true);
+  await tabA.stepDownToReadOnly();
+
+  // Tab B takes over WITHOUT having received a storage event -> MUST reload EDIT_MODE!
+  const tookOver = await tabB.takeOverWriter();
+  assert.equal(tookOver, true);
+  assert.equal(tabB.getViewModel().wristCenterMode, 'EDIT_MODE');
+
+  await tabB.relinkWrist();
+  msB.handlers.get('pause')();
+  assert.equal(tabB.getViewModel().editState.phase, 'PROMPT');
+  assert.equal(tabB.getViewModel().record.events.length, 0); // Did NOT record MY UE!
+
+  // Page hide -> storage changed externally back to ONE_TAP_UE -> page restore reloads ONE_TAP_UE
+  await tabB.handlePageHideOrFreeze();
+  storage.setItem(
+    'padelScore.defaults.v1',
+    JSON.stringify({ scoringMode: 'AD', initialServer: 0, wristCenterMode: 'ONE_TAP_UE' })
+  );
+  const restored = await tabB.handlePageShowOrResume();
+  assert.equal(restored, true);
+  assert.equal(tabB.getViewModel().wristCenterMode, 'ONE_TAP_UE');
+
+  await tabB.handlePageHideOrFreeze();
+  await tabA.handlePageHideOrFreeze();
+});
+
+test('S4.2 review regression (P1): failed defaults write surfaces session-only warning on setWristCenterMode', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const ctrl = createAppController({
+    storage,
+    locks,
+    createAudio: createSimpleAudioHarness().createAudio,
+    mediaSession: createSimpleMediaSession(),
+    now: () => Date.UTC(2026, 4, 8, 18, 0, 0),
+  });
+
+  await ctrl.init();
+  assert.equal(ctrl.getViewModel().wristCenterMode, 'ONE_TAP_UE');
+
+  const quotaErr = new Error('QuotaExceededError');
+  quotaErr.name = 'QuotaExceededError';
+  storage.setFailDefaultsSet(quotaErr);
+
+  const res = ctrl.setWristCenterMode('EDIT_MODE');
+  assert.equal(res.ok, true);
+  assert.equal(res.persisted, false);
+  assert.equal(ctrl.getViewModel().wristCenterMode, 'EDIT_MODE');
+  assert.match(ctrl.getViewModel().actionError, /this session only/i);
+
+  await ctrl.handlePageHideOrFreeze();
+});
+
+test('S4.2 review regression (P2): ordinary LIVE revisions stay in FIFO publish queue when stalled', async () => {
+  const storage = createMemoryStorage();
+  const locks = createSharedMockLocks();
+  const audioH = createSimpleAudioHarness();
+  const metadataLog = [];
+  const handlers = new Map();
+  const ms = {
+    playbackState: 'none',
+    setActionHandler(action, fn) {
+      if (fn === null) handlers.delete(action);
+      else handlers.set(action, fn);
+    },
+    setPositionState() {},
+    handlers,
+    set metadata(val) {
+      this._m = val;
+      if (val) metadataLog.push({ title: val.title, artist: val.artist });
+    },
+    get metadata() {
+      return this._m ?? null;
+    },
+  };
+
+  let clock = Date.UTC(2026, 4, 9, 18, 0, 0);
+  let stallGate = null;
+  let releaseGate = null;
+
+  const ctrl = createAppController({
+    storage,
+    locks,
+    createAudio: audioH.createAudio,
+    mediaSession: ms,
+    createMatchId: () => 'm-live-fifo',
+    now: () => clock,
+    beforePublish: async () => {
+      if (stallGate) {
+        await stallGate;
+      }
+    },
+  });
+
+  await ctrl.init();
+  ctrl.setSetupInitialServer(0);
+  await ctrl.startMatch({ linkWrist: true });
+  const beforeStallCount = metadataLog.length;
+
+  stallGate = new Promise((res) => {
+    releaseGate = res;
+  });
+
+  clock += 1000;
+  const p2 = ctrl.scorePoint('A'); // #2: *15-0
+  clock += 1000;
+  const p3 = ctrl.scorePoint('B'); // #3: *15-15
+
+  stallGate = null;
+  releaseGate();
+
+  const [r2, r3] = await Promise.all([p2, p3]);
+  assert.equal(r2.ok, true);
+  assert.equal(r2.wristPublished, true);
+  assert.equal(r3.ok, true);
+  assert.equal(r3.wristPublished, true);
+
+  const written = metadataLog.slice(beforeStallCount);
+  assert.equal(written.length, 2);
+  assert.ok(written[0].title.includes('#2'));
+  assert.ok(written[0].title.includes('*15-0'));
+  assert.ok(written[1].title.includes('#3'));
+  assert.ok(written[1].title.includes('*15-15'));
+
+  await ctrl.handlePageHideOrFreeze();
 });

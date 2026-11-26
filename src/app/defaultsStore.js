@@ -1,8 +1,11 @@
+import { normalizeWristCenterMode, WRIST_CENTER_MODES } from '../core/wristEditMode.js';
+
 export const DEFAULTS_STORAGE_KEY = 'padelScore.defaults.v1';
 
 export const DEFAULT_MATCH_SETTINGS = Object.freeze({
   scoringMode: 'AD',
   initialServer: null,
+  wristCenterMode: WRIST_CENTER_MODES.ONE_TAP_UE,
 });
 
 function normalizeInitialServer(value) {
@@ -17,8 +20,8 @@ function normalizeScoringMode(value) {
 
 /**
  * Loads saved New Match defaults fault-tolerantly.
- * Never throws: missing, unreadable, or corrupt defaults fall back to AD + Pick on watch (null).
- * Legacy defaults like `{ initialServer: 0 }` migrate cleanly to `{ scoringMode: 'AD', initialServer: 0 }`.
+ * Never throws: missing, unreadable, or corrupt defaults fall back to AD + Pick on watch + ONE_TAP_UE.
+ * Legacy defaults migrate cleanly while preserving explicit fields.
  */
 export function loadMatchDefaults(storage, storageKey = DEFAULTS_STORAGE_KEY) {
   if (!storage || typeof storage.getItem !== 'function') {
@@ -34,6 +37,7 @@ export function loadMatchDefaults(storage, storageKey = DEFAULTS_STORAGE_KEY) {
     return {
       scoringMode: normalizeScoringMode(parsed.scoringMode),
       initialServer: normalizeInitialServer(parsed.initialServer),
+      wristCenterMode: normalizeWristCenterMode(parsed.wristCenterMode),
     };
   } catch {
     return { ...DEFAULT_MATCH_SETTINGS };
@@ -48,6 +52,7 @@ export function saveMatchDefaults(storage, settings, storageKey = DEFAULTS_STORA
   const payload = {
     scoringMode: normalizeScoringMode(settings?.scoringMode),
     initialServer: normalizeInitialServer(settings?.initialServer),
+    wristCenterMode: normalizeWristCenterMode(settings?.wristCenterMode),
   };
   if (!storage || typeof storage.setItem !== 'function') {
     return { ok: false, error: new Error('Storage unavailable') };

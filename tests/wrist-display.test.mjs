@@ -289,3 +289,95 @@ test('tie-break width boundaries preserve exact scores on manual finish and serv
   assert.equal(activeTbThem.title, 'TB THM +1*');
   assert.equal(activeTbThem.artist, '#999 S1-0 UE:3');
 });
+
+test('S4.2 EDIT #rev prompt, NO UNDO UE> empty prompt, first-rally Undo 0-0 budgets (20/20, 12/12, 8/14, #100), and EDIT OFF', () => {
+  // Normal EDIT prompt
+  const prompt42 = formatWristDisplay(makeState({ revision: 42 }), {
+    editState: { phase: 'PROMPT', matchId: 'm1', baseRevision: 42, canUndo: true, reason: null },
+  });
+  assert.equal(prompt42.title, 'EDIT #42');
+  assert.equal(prompt42.artist, '<UNDO   UE>');
+
+  // Empty-history prompt uses NO UNDO UE>
+  const promptEmpty = formatWristDisplay(
+    makeState({ sets: [0, 0], games: [0, 0], points: [0, 0], pointsLabel: ['0', '0'], counts: { myUePoints: 0, totalPoints: 0 }, revision: 2 }),
+    { editState: { phase: 'PROMPT', matchId: 'm1', baseRevision: 2, canUndo: false, reason: null } }
+  );
+  assert.equal(promptEmpty.title, 'EDIT #2');
+  assert.equal(promptEmpty.artist, 'NO UNDO UE>');
+  assert.ok(promptEmpty.artist.length <= 12);
+
+  // Undoing the very first rally back to love-all 0-0 (even if server === null) across 20/20, 12/12, 8/14, and #100
+  const loveAllAfterUndo = makeState({
+    sets: [0, 0],
+    games: [0, 0],
+    points: [0, 0],
+    pointsLabel: ['0', '0'],
+    server: null,
+    counts: { myUePoints: 0, totalPoints: 0 },
+    revision: 43,
+  });
+  const undoEdit43 = { phase: 'AWAITING_LIVE', matchId: 'm1', baseRevision: 43, canUndo: false, reason: 'UNDO' };
+
+  const b20 = formatWristDisplay(loveAllAfterUndo, { maxTitleLen: 20, maxArtistLen: 20, editState: undoEdit43 });
+  assert.equal(b20.title, 'UNDO 0-0 #43');
+  assert.equal(b20.artist, 'TAP || FOR LIVE');
+
+  const b12 = formatWristDisplay(loveAllAfterUndo, { maxTitleLen: 12, maxArtistLen: 12, editState: undoEdit43 });
+  assert.equal(b12.title, 'UNDO 0-0 #43');
+  assert.equal(b12.artist, '|| FOR LIVE');
+
+  const b814 = formatWristDisplay(loveAllAfterUndo, { maxTitleLen: 8, maxArtistLen: 14, editState: undoEdit43 });
+  assert.equal(b814.title, 'UNDO #43');
+  assert.equal(b814.artist, '0-0 || TO LIVE');
+
+  // Empty-history prompt at narrow 8/14 with #100 keeps NO UNDO, UE>, and full #100
+  const promptEmpty814 = formatWristDisplay(
+    makeState({ sets: [0, 0], games: [0, 0], points: [0, 0], pointsLabel: ['0', '0'], counts: { myUePoints: 0, totalPoints: 0 }, revision: 100 }),
+    { maxTitleLen: 8, maxArtistLen: 14, editState: { phase: 'PROMPT', matchId: 'm1', baseRevision: 100, canUndo: false, reason: null } }
+  );
+  assert.equal(promptEmpty814.title, 'NO UNDO');
+  assert.equal(promptEmpty814.artist, '#100 UE> EDIT');
+  assert.ok(promptEmpty814.title.length <= 8 && promptEmpty814.artist.length <= 14);
+
+  // #99 -> #100 at 8/14 keeps outcome (UNDO), score (0-0), full #100, and resume cue (|| LIVE)
+  const b814Rev100 = formatWristDisplay(
+    { ...loveAllAfterUndo, revision: 100 },
+    { maxTitleLen: 8, maxArtistLen: 14, editState: { ...undoEdit43, baseRevision: 100 } }
+  );
+  assert.equal(b814Rev100.title, 'UNDO 0-0');
+  assert.equal(b814Rev100.artist, '#100 || LIVE');
+  assert.ok(b814Rev100.title.length <= 8 && b814Rev100.artist.length <= 14);
+
+  // Tie-break UNDO and UE confirmations at 12/12 & #100 preserve the tie-break point score (*10-9)
+  const tbState100 = makeState({
+    inTieBreak: true,
+    server: 0,
+    games: [6, 6],
+    points: [10, 9],
+    pointsLabel: ['10', '9'],
+    revision: 100,
+  });
+  const tbUndo12 = formatWristDisplay(tbState100, {
+    maxTitleLen: 12,
+    maxArtistLen: 12,
+    editState: { phase: 'AWAITING_LIVE', matchId: 'm1', baseRevision: 100, canUndo: true, reason: 'UNDO' },
+  });
+  assert.equal(tbUndo12.title, 'UNDO *10-9');
+  assert.equal(tbUndo12.artist, '#100 || LIVE');
+
+  const tbUe12 = formatWristDisplay(tbState100, {
+    maxTitleLen: 12,
+    maxArtistLen: 12,
+    editState: { phase: 'AWAITING_LIVE', matchId: 'm1', baseRevision: 100, canUndo: true, reason: 'UE' },
+  });
+  assert.equal(tbUe12.title, 'UE *10-9');
+  assert.equal(tbUe12.artist, '#100 || LIVE');
+
+  // EDIT OFF invalidated gate
+  const inv = formatWristDisplay(makeState({ revision: 44 }), {
+    editState: { phase: 'AWAITING_LIVE', matchId: 'm1', baseRevision: 44, canUndo: false, reason: 'INVALIDATED' },
+  });
+  assert.equal(inv.title, 'EDIT OFF #44');
+  assert.equal(inv.artist, 'TAP || FOR LIVE');
+});

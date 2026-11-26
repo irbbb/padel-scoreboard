@@ -97,7 +97,7 @@ function resolveLayout(candidates, revTok, maxTitleLen, maxArtistLen) {
  */
 export function formatWristDisplay(
   state,
-  { maxTitleLen = 20, maxArtistLen = 20, showSwap = false } = {}
+  { maxTitleLen = 20, maxArtistLen = 20, showSwap = false, editState = null } = {}
 ) {
   assertBudget(maxTitleLen, 'maxTitleLen');
   assertBudget(maxArtistLen, 'maxArtistLen');
@@ -205,6 +205,83 @@ export function formatWristDisplay(
     });
 
     return resolveLayout(candidates, revTok, maxTitleLen, maxArtistLen);
+  }
+
+  // S4.2 Explicit EDIT #<rev> prompt & AWAITING_LIVE gate (only when revision-matched to ACTIVE state)
+  const matchesEditOverlay = Boolean(
+    editState &&
+      editState.phase !== 'LIVE' &&
+      editState.baseRevision === state.revision &&
+      (!editState.matchId || !state.matchId || editState.matchId === state.matchId)
+  );
+
+  if (matchesEditOverlay && editState.phase === 'PROMPT') {
+    const canUndo = editState.canUndo !== false && (state.counts?.totalPoints ?? 1) > 0;
+    const promptCandidates = canUndo
+      ? [
+          { titleTokens: ['EDIT', revTok], revOnTitle: true, artistRequiredToken: '<UNDO   UE>' },
+          { titleTokens: ['EDIT', revTok], revOnTitle: true, artistRequiredToken: '<UNDO UE>' },
+          { titleTokens: ['EDIT'], revOnTitle: false, artistRequiredToken: '<UNDO UE>' },
+          { titleTokens: ['<UNDO UE>', revTok], revOnTitle: true, artistOptionalTokens: ['EDIT'] },
+          { titleTokens: ['<UNDO UE>'], revOnTitle: false, artistOptionalTokens: ['EDIT'] },
+        ]
+      : [
+          { titleTokens: ['EDIT', revTok], revOnTitle: true, artistRequiredToken: 'NO UNDO UE>' },
+          { titleTokens: ['EDIT'], revOnTitle: false, artistRequiredToken: 'NO UNDO UE>' },
+          { titleTokens: ['NO UNDO'], revOnTitle: false, artistRequiredToken: 'UE>', artistOptionalTokens: ['EDIT'] },
+          { titleTokens: ['NO UNDO UE>', revTok], revOnTitle: true, artistOptionalTokens: ['EDIT'] },
+          { titleTokens: ['NO UNDO UE>'], revOnTitle: false, artistOptionalTokens: ['EDIT'] },
+        ];
+
+    return resolveLayout(promptCandidates, revTok, maxTitleLen, maxArtistLen);
+  }
+
+  if (matchesEditOverlay && editState.phase === 'AWAITING_LIVE') {
+    if (editState.reason === 'UNDO' || editState.reason === 'UE') {
+      const tag = editState.reason;
+      const isLoveAll =
+        !state.inTieBreak &&
+        state.sets[0] === 0 &&
+        state.sets[1] === 0 &&
+        state.games[0] === 0 &&
+        state.games[1] === 0 &&
+        state.points[0] === 0 &&
+        state.points[1] === 0 &&
+        (state.counts?.totalPoints ?? 0) === 0;
+      const srvUs = !isLoveAll && state.server === 0 ? '*' : '';
+      const srvThem = !isLoveAll && state.server === 1 ? '*' : '';
+      const ptsTok = `${srvUs}${state.pointsLabel[0]}-${state.pointsLabel[1]}${srvThem}`;
+
+      return resolveLayout(
+        [
+          { titleTokens: [tag, ptsTok, revTok], revOnTitle: true, artistRequiredToken: 'TAP || FOR LIVE' },
+          { titleTokens: [tag, ptsTok, revTok], revOnTitle: true, artistRequiredToken: '|| FOR LIVE' },
+          { titleTokens: [tag, revTok], revOnTitle: true, artistRequiredToken: `${ptsTok} || TO LIVE` },
+          { titleTokens: [tag, ptsTok], revOnTitle: false, artistRequiredToken: '|| LIVE' },
+          { titleTokens: [tag, revTok], revOnTitle: true, artistRequiredToken: '|| TO LIVE' },
+          { titleTokens: [tag, revTok], revOnTitle: true, artistRequiredToken: '|| LIVE' },
+          { titleTokens: [tag], revOnTitle: false, artistRequiredToken: '|| LIVE', artistOptionalTokens: [ptsTok] },
+          { titleTokens: [tag], revOnTitle: false, artistRequiredToken: '||', artistOptionalTokens: [ptsTok] },
+        ],
+        revTok,
+        maxTitleLen,
+        maxArtistLen
+      );
+    }
+
+    // INVALIDATED (phone edit, Cancel, mode switch, or Re-link after interruption)
+    return resolveLayout(
+      [
+        { titleTokens: ['EDIT OFF', revTok], revOnTitle: true, artistRequiredToken: 'TAP || FOR LIVE' },
+        { titleTokens: ['EDIT OFF', revTok], revOnTitle: true, artistRequiredToken: '|| FOR LIVE' },
+        { titleTokens: ['EDIT OFF', revTok], revOnTitle: true, artistRequiredToken: '|| LIVE' },
+        { titleTokens: ['EDIT OFF'], revOnTitle: false, artistRequiredToken: '|| LIVE' },
+        { titleTokens: ['EDIT OFF'], revOnTitle: false, artistRequiredToken: '||' },
+      ],
+      revTok,
+      maxTitleLen,
+      maxArtistLen
+    );
   }
 
   // ACTIVE match awaiting first server selection from watch (after 4-touch warmup point)

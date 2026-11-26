@@ -80,6 +80,14 @@ During `S0.2` physical testing, the target band was identified as the **Xiaomi S
 - **Ordinary Service Hold Rate Isolation:** Checking `!preState.inTieBreak` plus `(postState.games sum changed || postState.setHistory.length increased)` cleanly counts only completed ordinary service games served by US, automatically excluding incomplete games and tie-breaks.
 - **Bounded 15-Minute Elapsed Windows & History Isolation:** Clamping negative clock skew to `0`, emitting contiguous buckets `0 .. maxBucket` (with a sanity cap against huge outlier timestamps) preserves empty intermediate windows (`—`), while storing archived finished matches under a separate key (`padelScore.history.v1`, upserted by `matchId`, removed if reopened via Undo/Resume) guarantees history quota errors never block active match scoring.
 
+---
+
+## 10. `S4.2` Explicit `EDIT #<rev>` Wrist-Undo Mode Spike Learnings
+- **3-State Machine (`LIVE` → `PROMPT` → `AWAITING_LIVE` → `LIVE`):** Unifying post-confirmation (`UNDO` / `UE`) and stale/phone-edit/Cancel invalidation (`INVALIDATED`) into one `AWAITING_LIVE` gate state keeps the state machine tiny, guarantees repeated or late `Prev`/`Next` arrows are consumed without scoring until `Center` on the band returns to live scoring (phone `Cancel` dismisses the prompt into `AWAITING_LIVE(INVALIDATED)` while keeping phone controls live), and avoids silent one-shot tap swallowing minutes later.
+- **Synchronous Commit Ownership Tracking:** Because `matchStore.commit()` invokes `onStateChange` synchronously before returning, tagging wrist-initiated `EDIT` commits (`pendingWristEditCommit`) distinguishes our own `UNDO`/`UE` transition (`AWAITING_LIVE` with `UNDO`/`UE` confirmation) from an external phone edit (`AWAITING_LIVE` with `INVALIDATED`) and ensures a failed storage write never transitions to a false `UNDO`/`UE` confirmation.
+- **Revision-Pinned Wrist Overlay:** Binding `EDIT` display overlays strictly to `editState.matchId === record.matchId && editState.baseRevision === record.revision` keeps `EDIT #42` / `<UNDO   UE>` ephemeral (zero `localStorage` writes or revision bumps on prompt open/close) while ensuring queued stale publishes never show mismatched overlays.
+
+
 
 
 

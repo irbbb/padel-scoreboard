@@ -17,7 +17,14 @@ import {
   isSameTerminalSnapshot,
   isTerminalMatchRecord,
 } from '../core/matchHistory.js';
-import { loadMatchDefaults, saveMatchDefaults } from './defaultsStore.js';
+import {
+  createInitialEditState,
+  invalidateEditToAwaitingLive,
+  normalizeWristCenterMode,
+  reconcileEditStateAfterRecordChange,
+  reduceEditWristInput,
+} from '../core/wristEditMode.js';
+import { DEFAULTS_STORAGE_KEY, loadMatchDefaults, saveMatchDefaults } from './defaultsStore.js';
 import { createWristBridge } from './wristBridge.js';
 
 function toErrorMessage(err) {
@@ -117,6 +124,7 @@ export function createAppController({
   now = () => Date.now(),
   onUpdate = null,
   onDurationTick = null,
+  beforePublish = null,
 } = {}) {
   const diagLog = createDiagnosticLog({ storage, now });
   const historyStore = createMatchHistoryStore({ storage });
@@ -124,6 +132,22 @@ export function createAppController({
 
   let setupScoringMode = initialDefaults.scoringMode;
   let setupInitialServer = initialDefaults.initialServer;
+  let wristCenterMode = initialDefaults.wristCenterMode;
+  let wasWriter = false;
+  let editState = createInitialEditState();
+  let interruptedEditMatchId = null;
+  let displayGen = 0;
+  let pendingWristEditCommit = null; // { matchId, expectedBaseRev, targetReason } | null
+
+  function setEditStateAndBump(next) {
+    const prev = editState;
+    editState = next;
+    // Only bump displayGen across non-LIVE edit-overlay transitions so ordinary LIVE -> LIVE
+    // commits preserve strict FIFO one-snapshot-per-revision delivery while stale edit overlays skip.
+    if (prev.phase !== 'LIVE' || next.phase !== 'LIVE' || prev !== next) {
+      displayGen += 1;
+    }
+  }
   let replacementDraft = null; // { baseMatchId, baseRevision, scoringMode, initialServer } | null
   let archiveBlockedDraft = false;
   let menuOpen = false;
@@ -297,14 +321,51 @@ export function createAppController({
     storage,
     locks,
     now,
-    capturePublishContext: () => (wristBridge ? wristBridge.capturePublishContext() : null),
-    publishWrist: (state, record, originToken) => {
+    capturePublishContext: (_nextState, nextRecord) => {
+      let ownReason = null;
+      if (
+        pendingWristEditCommit !== null &&
+        nextRecord &&
+        nextRecord.status === 'ACTIVE' &&
+        nextRecord.matchId === pendingWristEditCommit.matchId &&
+        nextRecord.revision === pendingWristEditCommit.expectedBaseRev + 1
+      ) {
+        ownReason = pendingWristEditCommit.targetReason;
+        pendingWristEditCommit = null;
+        interruptedEditMatchId = null;
+      }
+
+      const nextEdit = reconcileEditStateAfterRecordChange(editState, nextRecord, {
+        ownCommitReason: ownReason,
+      });
+      setEditStateAndBump(nextEdit);
+
+      if (
+        !nextRecord ||
+        nextRecord.status !== 'ACTIVE' ||
+        (interruptedEditMatchId !== null && interruptedEditMatchId !== nextRecord.matchId)
+      ) {
+        interruptedEditMatchId = null;
+      }
+
+      const myGen = displayGen;
+      return Object.freeze({
+        token: wristBridge ? wristBridge.capturePublishContext() : null,
+        displayGen: myGen,
+        editState,
+      });
+    },
+    publishWrist: async (state, record, originContext) => {
+      if (typeof beforePublish === 'function') {
+        await beforePublish(state, record, originContext);
+      }
       if (!wristBridge) return { skipped: true };
-      return wristBridge.publishSnapshot(state, record, originToken);
+      return wristBridge.publishSnapshot(state, record, originContext);
     },
     onStateChange: (snapshot) => {
       reconcileDraft(snapshot);
       if (snapshot.role !== 'WRITER') {
+        wasWriter = false;
         menuOpen = false;
         confirmFinishOpen = false;
         confirmClearCorruptOpen = false;
@@ -313,7 +374,14 @@ export function createAppController({
         lastReconciledKey = null;
         lastReconciledMatchId = null;
         lastReconciledStatus = null;
+        setEditStateAndBump(createInitialEditState());
+        interruptedEditMatchId = null;
+        displayGen += 1;
       } else {
+        if (!wasWriter) {
+          wasWriter = true;
+          wristCenterMode = loadMatchDefaults(storage).wristCenterMode;
+        }
         takeoverNotice = null;
       }
       if (snapshot.storageStatus !== 'CORRUPT') {
@@ -322,6 +390,8 @@ export function createAppController({
       if (snapshot.record?.status !== 'ACTIVE') {
         confirmFinishOpen = false;
         confirmOpenerOpen = false;
+        setEditStateAndBump(createInitialEditState());
+        interruptedEditMatchId = null;
       }
       if (wristBridge) {
         wristBridge.syncStoreSnapshot(snapshot);
@@ -335,6 +405,20 @@ export function createAppController({
     },
   });
 
+  function republishIfArmed() {
+    const snap = store.getSnapshot(now());
+    if (
+      snap.role === 'WRITER' &&
+      snap.storageStatus === 'READY' &&
+      snap.record?.status === 'ACTIVE' &&
+      wristBridge &&
+      wristBridge.getStatus().status === 'ARMED'
+    ) {
+      return store.republishWrist(now());
+    }
+    return Promise.resolve({ ok: true, wristPublished: false });
+  }
+
   wristBridge = createWristBridge({
     createAudio,
     mediaSession,
@@ -342,42 +426,110 @@ export function createAppController({
     diagLog,
     now,
     getStoreSnapshot: () => store.getSnapshot(now()),
-    onCommand: (code, action) => {
+    isDisplayGenCurrent: (gen) => gen === displayGen,
+    onInterrupted: () => {
+      const snap = store.getSnapshot(now());
+      if (editState.phase !== 'LIVE' && snap.record?.status === 'ACTIVE') {
+        interruptedEditMatchId = snap.record.matchId;
+        setEditStateAndBump(invalidateEditToAwaitingLive(editState, snap.record));
+        emitUpdate();
+      }
+    },
+    onCommand: (_code, action) => {
       actionError = null;
       const nowMs = now();
       const beforeSnap = store.getSnapshot(nowMs);
-      const beforeRev = beforeSnap.record?.revision ?? null;
+      const beforeRec = beforeSnap.record;
+      const beforeRev = beforeRec?.revision ?? null;
 
-      let ignoredAwaitingServer = false;
-      let actionDetail = `code=${code}`;
+      if (beforeSnap.role !== 'WRITER' || beforeSnap.storageStatus !== 'READY' || !beforeRec) {
+        return { outcome: 'noop', revision: beforeRev, detail: 'not_live_writer' };
+      }
 
-      const promise = store.commit((rec) => {
-        if (rec.status === 'ACTIVE' && rec.config.initialServer === null) {
-          if (code === 'A') {
-            actionDetail = 'pick_server=US';
-            return correctInitialServer(rec, 0);
-          }
-          if (code === 'B') {
-            actionDetail = 'pick_server=THEM';
-            return correctInitialServer(rec, 1);
-          }
-          ignoredAwaitingServer = true;
-          return rec;
+      const { nextEditState, effect } = reduceEditWristInput(
+        editState,
+        action,
+        beforeRec,
+        wristCenterMode
+      );
+
+      if (effect.type === 'IGNORE_AWAITING_SERVER') {
+        return {
+          outcome: 'ignored_awaiting_server',
+          revision: beforeRev,
+          detail: effect.detail,
+        };
+      }
+
+      if (effect.type === 'OPEN_PROMPT' || effect.type === 'KEEP_PROMPT_OPEN') {
+        setEditStateAndBump(nextEditState);
+        const promise = republishIfArmed();
+        emitUpdate();
+        return { outcome: 'noop', revision: beforeRev, detail: `edit_${effect.type.toLowerCase()}`, promise };
+      }
+
+      if (effect.type === 'RETURN_TO_LIVE') {
+        setEditStateAndBump(nextEditState);
+        interruptedEditMatchId = null;
+        const promise = republishIfArmed();
+        emitUpdate();
+        return { outcome: 'noop', revision: beforeRev, detail: `edit_return_live_${effect.detail}`, promise };
+      }
+
+      if (effect.type === 'CONSUME_STALE_ARROW') {
+        setEditStateAndBump(nextEditState);
+        const promise = republishIfArmed();
+        emitUpdate();
+        return { outcome: 'noop', revision: beforeRev, detail: `edit_${effect.detail}`, promise };
+      }
+
+      if (effect.type === 'CONSUME_ARROW' || effect.type === 'NO_UNDO_AVAILABLE' || effect.type === 'IGNORE') {
+        return { outcome: 'noop', revision: beforeRev, detail: `edit_${effect.type.toLowerCase()}` };
+      }
+
+      // Mutating wrist command: PICK_SERVER, SCORE, COMMIT_UNDO, or COMMIT_UE
+      let actionDetail = effect.type;
+      let promise;
+
+      if (effect.type === 'COMMIT_UNDO' || effect.type === 'COMMIT_UE') {
+        const targetReason = effect.type === 'COMMIT_UNDO' ? 'UNDO' : 'UE';
+        actionDetail = targetReason === 'UNDO' ? 'edit_undo' : 'edit_ue';
+        pendingWristEditCommit = {
+          matchId: effect.matchId,
+          expectedBaseRev: effect.expectedRevision,
+          targetReason,
+        };
+        try {
+          promise = store.commit((rec) => {
+            if (
+              rec.status !== 'ACTIVE' ||
+              rec.matchId !== effect.matchId ||
+              rec.revision !== effect.expectedRevision
+            ) {
+              return rec;
+            }
+            return targetReason === 'UNDO' ? undoLastPoint(rec) : addPoint(rec, 'E', nowMs);
+          }, nowMs);
+        } finally {
+          pendingWristEditCommit = null;
         }
-        return addPoint(rec, code, nowMs);
-      }, nowMs);
+      } else if (effect.type === 'PICK_SERVER') {
+        actionDetail = effect.team === 0 ? 'pick_server=US' : 'pick_server=THEM';
+        promise = store.commit((rec) => {
+          if (rec.status !== 'ACTIVE' || rec.config.initialServer !== null) {
+            return rec;
+          }
+          return correctInitialServer(rec, effect.team);
+        }, nowMs);
+      } else {
+        // effect.type === 'SCORE'
+        actionDetail = `code=${effect.code}`;
+        promise = store.commit((rec) => addPoint(rec, effect.code, nowMs), nowMs);
+      }
 
       const afterSnap = store.getSnapshot(nowMs);
       const afterRev = afterSnap.record?.revision ?? null;
 
-      if (ignoredAwaitingServer) {
-        return {
-          outcome: 'ignored_awaiting_server',
-          revision: afterRev,
-          detail: `action=${action}`,
-          promise,
-        };
-      }
       if (afterSnap.lastSaveError !== null) {
         return {
           outcome: 'save_failed',
@@ -459,7 +611,7 @@ export function createAppController({
     let wristPreview = null;
     if (state) {
       try {
-        wristPreview = formatWristDisplay(state);
+        wristPreview = formatWristDisplay(state, { editState });
       } catch {
         wristPreview = null;
       }
@@ -537,6 +689,8 @@ export function createAppController({
       state,
       wristPreview,
       wrist,
+      wristCenterMode,
+      editState,
       setupScoringMode: activeScoringMode,
       setupInitialServer: activeInitialServer,
       durationText: state ? formatDuration(state.durationSec) : '00:00',
@@ -678,7 +832,14 @@ export function createAppController({
     const chosenServer = replacementDraft ? replacementDraft.initialServer : setupInitialServer;
     setupScoringMode = chosenScoringMode;
     setupInitialServer = chosenServer;
-    saveMatchDefaults(storage, { scoringMode: chosenScoringMode, initialServer: chosenServer });
+    saveMatchDefaults(storage, {
+      scoringMode: chosenScoringMode,
+      initialServer: chosenServer,
+      wristCenterMode,
+    });
+
+    editState = createInitialEditState();
+    interruptedEditMatchId = null;
 
     const matchId = createMatchId(nowMs);
     const commitPromise = store.startNewMatch({
@@ -953,8 +1114,84 @@ export function createAppController({
     }
   }
 
+  function setWristCenterMode(mode) {
+    const snap = store.getSnapshot(now());
+    if (snap.role !== 'WRITER') {
+      actionError = 'Read-only mode cannot change wrist center mode.';
+      emitUpdate();
+      return { ok: false, persisted: false, error: new Error(actionError) };
+    }
+
+    const normalized = normalizeWristCenterMode(mode);
+    wristCenterMode = normalized;
+    const saved = saveMatchDefaults(storage, {
+      scoringMode: setupScoringMode,
+      initialServer: setupInitialServer,
+      wristCenterMode: normalized,
+    });
+    if (!saved.ok) {
+      actionError = `Could not save wrist mode (applies to this session only; reload will revert): ${toErrorMessage(saved.error)}`;
+    } else {
+      actionError = null;
+    }
+
+    if (
+      normalized === 'ONE_TAP_UE' &&
+      editState.phase !== 'LIVE' &&
+      snap.storageStatus === 'READY' &&
+      snap.record?.status === 'ACTIVE'
+    ) {
+      // Keep wrist arrows blocked until Center so a player still seeing EDIT #<rev> cannot score A/B
+      setEditStateAndBump(invalidateEditToAwaitingLive(editState, snap.record));
+      republishIfArmed();
+    }
+    emitUpdate();
+    return { ok: true, persisted: saved.ok, error: saved.error };
+  }
+
+  function cancelWristEdit() {
+    actionError = null;
+    if (editState.phase === 'LIVE') {
+      return Promise.resolve({ ok: true, changed: false });
+    }
+    const snap = store.getSnapshot(now());
+    let pubPromise = Promise.resolve({ ok: true, wristPublished: false });
+    if (snap.role === 'WRITER' && snap.storageStatus === 'READY' && snap.record?.status === 'ACTIVE') {
+      setEditStateAndBump(invalidateEditToAwaitingLive(editState, snap.record));
+      pubPromise = republishIfArmed();
+    } else {
+      setEditStateAndBump(createInitialEditState());
+      interruptedEditMatchId = null;
+    }
+    emitUpdate();
+    return pubPromise;
+  }
+
   function relinkWrist() {
     actionError = null;
+    const snap = store.getSnapshot(now());
+    const rec = snap.record;
+    if (rec?.status === 'ACTIVE') {
+      if (interruptedEditMatchId !== null && interruptedEditMatchId === rec.matchId) {
+        setEditStateAndBump(
+          invalidateEditToAwaitingLive(
+            { phase: 'AWAITING_LIVE', matchId: rec.matchId, baseRevision: rec.revision, canUndo: false, reason: 'INVALIDATED' },
+            rec
+          )
+        );
+        interruptedEditMatchId = null;
+      } else if (editState.phase !== 'LIVE') {
+        setEditStateAndBump(
+          editState.matchId === rec.matchId
+            ? invalidateEditToAwaitingLive(editState, rec)
+            : createInitialEditState()
+        );
+      }
+    } else {
+      setEditStateAndBump(createInitialEditState());
+      interruptedEditMatchId = null;
+    }
+    emitUpdate();
     return wristBridge.linkFromUserGesture(() => store.republishWrist(now()));
   }
 
@@ -1049,14 +1286,21 @@ export function createAppController({
   function handleStorageEvent(key) {
     const matchTouched = key === null || key === MATCH_STORAGE_KEY;
     const historyTouched = key === null || key === HISTORY_STORAGE_KEY;
-    if (!matchTouched && !historyTouched) {
+    const defaultsTouched = key === null || key === DEFAULTS_STORAGE_KEY;
+    if (!matchTouched && !historyTouched && !defaultsTouched) {
       return;
     }
-    if (matchTouched && store.getSnapshot(now()).role !== 'WRITER') {
+    const isWriter = store.getSnapshot(now()).role === 'WRITER';
+    if (matchTouched && !isWriter) {
       store.refreshReadOnly();
+    }
+    if (defaultsTouched && !isWriter) {
+      wristCenterMode = loadMatchDefaults(storage).wristCenterMode;
     }
     if (historyTouched) {
       refreshHistorySnapshot(store.getSnapshot(now()).record);
+    }
+    if (historyTouched || (defaultsTouched && !isWriter)) {
       emitUpdate();
     }
   }
@@ -1117,6 +1361,7 @@ export function createAppController({
     if (error) {
       takeoverNotice = `Writer lock error: ${toErrorMessage(error)}`;
     } else if (!acquired) {
+      wristCenterMode = loadMatchDefaults(storage).wristCenterMode;
       store.refreshReadOnly();
     }
     emitUpdate();
@@ -1139,6 +1384,8 @@ export function createAppController({
     getViewModel,
     setSetupScoringMode,
     setSetupInitialServer,
+    setWristCenterMode,
+    cancelWristEdit,
     startMatch,
     scorePoint,
     undo,

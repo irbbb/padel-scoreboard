@@ -75,6 +75,8 @@ export function createWristBridge({
   createMetadata = defaultCreateMetadata,
   diagLog = null,
   onStatusChange = null,
+  onInterrupted = null,
+  isDisplayGenCurrent = null,
   now = () => Date.now(),
 } = {}) {
   if (typeof getStoreSnapshot !== 'function') {
@@ -245,6 +247,13 @@ export function createWristBridge({
       return;
     }
     teardown({ nextStatus: 'INTERRUPTED', reason: detail, clearError: false });
+    if (typeof onInterrupted === 'function') {
+      try {
+        onInterrupted(detail);
+      } catch {
+        // Isolate observer errors
+      }
+    }
   }
 
   function attachAudioListeners(audio, myToken) {
@@ -410,8 +419,10 @@ export function createWristBridge({
     }
   }
 
-  function writeMetadata(state) {
-    const { title, artist } = formatDisplay(state);
+  function writeMetadata(state, editState = null) {
+    const { title, artist } = editState
+      ? formatDisplay(state, { editState })
+      : formatDisplay(state);
     mediaSession.metadata = createMetadata({ title, artist, album: '' });
   }
 
@@ -657,15 +668,21 @@ export function createWristBridge({
 
   /**
    * Invoked by matchStore's FIFO publishQueue after storage.setItem succeeds.
+   * Accepts either a numeric originToken or an immutable snapshot { token, displayGen, editState }.
    * Returns { skipped: true } whenever no metadata was actually published so matchStore
    * never lets a skipped publish clear an existing lastPublishError.
    */
-  function publishSnapshot(state, record, originToken = undefined) {
+  function publishSnapshot(state, record, originContext = undefined) {
     if (!supported) {
       return { skipped: true };
     }
 
-    // Exact-record terminal publish path
+    const isObjContext = originContext !== null && typeof originContext === 'object';
+    const originToken = isObjContext ? originContext.token : originContext;
+    const originDisplayGen = isObjContext ? originContext.displayGen : undefined;
+    const originEditState = isObjContext ? originContext.editState ?? null : null;
+
+    // Exact-record terminal publish path (independent of displayGen so final WIN/END always writes & pauses audio)
     if (pendingFinal !== null) {
       if (record !== pendingFinal.record) {
         return { skipped: true };
@@ -684,7 +701,7 @@ export function createWristBridge({
       }
 
       try {
-        writeMetadata(state);
+        writeMetadata(state, null);
         logDiag('wrist_publish_final', {
           audio: target.audio,
           revision: record.revision,
@@ -707,6 +724,14 @@ export function createWristBridge({
       return { skipped: true };
     }
 
+    if (
+      originDisplayGen !== undefined &&
+      typeof isDisplayGenCurrent === 'function' &&
+      !isDisplayGenCurrent(originDisplayGen)
+    ) {
+      return { skipped: true };
+    }
+
     const currentSnap = getStoreSnapshot();
     if (
       !canArmFromSnapshot(currentSnap) ||
@@ -718,7 +743,7 @@ export function createWristBridge({
       return { skipped: true };
     }
 
-    writeMetadata(state);
+    writeMetadata(state, originEditState);
     const audio = activeSession.audio;
     setPlaybackStateSafely(isAudioHealthyPlaying(audio) ? 'playing' : 'paused');
     updatePositionStateSafely(audio);

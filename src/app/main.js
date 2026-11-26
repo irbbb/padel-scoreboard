@@ -53,6 +53,39 @@ function renderWristBanner(vm) {
   `;
 }
 
+function renderWristEditBanner(vm) {
+  if (!vm.isWriter || vm.screen !== 'LIVE' || !vm.editState || vm.editState.phase === 'LIVE') {
+    return '';
+  }
+  const es = vm.editState;
+  if (es.phase === 'PROMPT') {
+    return `
+      <div class="banner banner-warn" data-testid="wrist-edit-banner">
+        <div class="banner-row">
+          <strong>Wrist in EDIT #${es.baseRevision} (${es.canUndo ? '&lt;UNDO / UE&gt;' : 'NO UNDO / UE&gt;'})</strong>
+          <button class="btn btn-sm" data-action="cancel-wrist-edit">Cancel Edit</button>
+        </div>
+        <div class="muted">Phone scoring stays available. Canceling blocks wrist arrows until Center (||) is pressed on the band.</div>
+      </div>
+    `;
+  }
+  if (es.reason === 'UNDO' || es.reason === 'UE') {
+    return `
+      <div class="banner banner-ok" data-testid="wrist-edit-banner">
+        <div class="banner-row">
+          <strong>Wrist ${es.reason === 'UNDO' ? 'Undo' : 'MY UE'} saved (#${es.baseRevision}). Press Center (||) on band to resume arrows.</strong>
+          <button class="btn btn-sm" data-action="cancel-wrist-edit">Cancel</button>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="banner banner-warn" data-testid="wrist-edit-banner">
+      <strong>Edit canceled (#${es.baseRevision}). Press Center (||) on the band to resume wrist scoring.</strong>
+    </div>
+  `;
+}
+
 function renderReadOnlyBanner(vm) {
   if (vm.isWriter || vm.screen === 'LOADING') return '';
   return `
@@ -88,6 +121,8 @@ function renderErrorBanners(vm) {
 function renderSetupScreen(vm) {
   const adSel = vm.setupScoringMode === 'AD' ? 'btn-selected' : '';
   const gpSel = vm.setupScoringMode === 'GP' ? 'btn-selected' : '';
+  const oneTapSel = vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : '';
+  const editModeSel = vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : '';
   const watchSel = vm.setupInitialServer === null ? 'btn-selected' : '';
   const usSel = vm.setupInitialServer === 0 ? 'btn-selected' : '';
   const themSel = vm.setupInitialServer === 1 ? 'btn-selected' : '';
@@ -104,6 +139,13 @@ function renderSetupScreen(vm) {
         <div class="controls-row">
           <button class="btn ${adSel}" data-action="set-scoring-mode" data-mode="AD" ${disabled}>Advantage (AD)</button>
           <button class="btn ${gpSel}" data-action="set-scoring-mode" data-mode="GP" ${disabled}>Golden Point (GP)</button>
+        </div>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:8px;"><strong>Wrist center button (||)</strong></div>
+        <div class="controls-row">
+          <button class="btn btn-sm ${oneTapSel}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE" ${disabled}>1-Tap MY UE</button>
+          <button class="btn btn-sm ${editModeSel}" data-action="set-wrist-mode" data-mode="EDIT_MODE" ${disabled}>EDIT #rev (Undo &amp; UE)</button>
         </div>
       </div>
       <div>
@@ -195,6 +237,14 @@ function renderMenuPanel(vm) {
              </div>`
           : `<button class="btn btn-danger" data-action="open-finish">Finish Now</button>`
       }
+
+      <div>
+        <div class="muted" style="margin-bottom:6px;"><strong>Wrist center button (||)</strong></div>
+        <div class="controls-row">
+          <button class="btn btn-sm ${vm.wristCenterMode === 'ONE_TAP_UE' ? 'btn-selected' : ''}" data-action="set-wrist-mode" data-mode="ONE_TAP_UE">1-Tap MY UE</button>
+          <button class="btn btn-sm ${vm.wristCenterMode === 'EDIT_MODE' ? 'btn-selected' : ''}" data-action="set-wrist-mode" data-mode="EDIT_MODE">EDIT #rev (Undo &amp; UE)</button>
+        </div>
+      </div>
 
       <button class="btn btn-sm" data-action="step-down">Release Writer Lock (Read-Only)</button>
 
@@ -806,6 +856,7 @@ function boot() {
       </header>
       ${renderReadOnlyBanner(vm)}
       ${renderWristBanner(vm)}
+      ${renderWristEditBanner(vm)}
       ${renderErrorBanners(vm)}
       ${copyFeedback ? `<div class="banner banner-ok">${escapeHtml(copyFeedback)}</div>` : ''}
       ${body}
@@ -866,6 +917,10 @@ function boot() {
 
     if (action === 'set-scoring-mode') {
       controller.setSetupScoringMode(btn.dataset.mode);
+    } else if (action === 'set-wrist-mode') {
+      controller.setWristCenterMode(btn.dataset.mode);
+    } else if (action === 'cancel-wrist-edit') {
+      controller.cancelWristEdit();
     } else if (action === 'set-server') {
       const team = btn.dataset.team === '0' ? 0 : btn.dataset.team === '1' ? 1 : null;
       controller.setSetupInitialServer(team);
