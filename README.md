@@ -26,10 +26,30 @@ Zero-APK Padel Scoreboard, Unforced Error (`MY UE`) tracker, and timestamped mat
 
 Start a native Band Workout (recording Heart Rate) and swipe right to **Music Controls** — your phone stays locked in your bag:
 
-| 1. Pick First Server | 2. Score Live Rallies | 3. Open Edit (`\|\|`) | 4. Resume Live (`\|\|`) |
-| :---: | :---: | :---: | :---: |
-| <img src="docs/screenshots/band-warmup.svg" alt="Xiaomi Smart Band 9 Active showing WHO SERVES? #1" width="175"> | <img src="docs/screenshots/band-live.svg" alt="Xiaomi Smart Band 9 Active showing *30-15 4-1 #65" width="175"> | <img src="docs/screenshots/band-edit.svg" alt="Xiaomi Smart Band 9 Active showing EDIT #65" width="175"> | <img src="docs/screenshots/band-resume.svg" alt="Xiaomi Smart Band 9 Active showing UE *30-30 #66 resume screen" width="175"> |
-| `<` US or `>` THEM (no point scored) | `<` US +1 · `\|\|` Edit · `>` THEM +1 | `<` Undo last point · `>` My UE | Arrows lock against double-taps until `\|\|` |
+<table>
+  <thead>
+    <tr>
+      <th width="25%" align="center">1. Pick First Server</th>
+      <th width="25%" align="center">2. Score Live Rallies</th>
+      <th width="25%" align="center">3. Open Edit (<code>||</code>)</th>
+      <th width="25%" align="center">4. Resume Live (<code>||</code>)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center"><img src="docs/screenshots/band-warmup.svg" alt="Xiaomi Smart Band 9 Active showing WHO SERVES? #1" width="160"></td>
+      <td align="center"><img src="docs/screenshots/band-live.svg" alt="Xiaomi Smart Band 9 Active showing *30-15 4-1 #65" width="160"></td>
+      <td align="center"><img src="docs/screenshots/band-edit.svg" alt="Xiaomi Smart Band 9 Active showing EDIT #65" width="160"></td>
+      <td align="center"><img src="docs/screenshots/band-resume.svg" alt="Xiaomi Smart Band 9 Active showing UE *30-30 #66 resume screen" width="160"></td>
+    </tr>
+    <tr>
+      <td align="center"><code>&lt;</code> US or <code>&gt;</code> THEM (no point scored)</td>
+      <td align="center"><code>&lt;</code> US +1 · <code>||</code> Edit · <code>&gt;</code> THEM +1</td>
+      <td align="center"><code>&lt;</code> Undo last point · <code>&gt;</code> My UE</td>
+      <td align="center">Arrows lock until <code>||</code> is pressed</td>
+    </tr>
+  </tbody>
+</table>
 
 ---
 
